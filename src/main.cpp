@@ -54,7 +54,7 @@ static sensorlessHomeProperties sensorlessHome = {
 void homingNotification(bool isHomed) {
   if (isHomed) {
     Serial.println("Found home - Ready to rumble!");
-    Stroker.moveToMax(HOMING_SPEED);
+    Stroker.moveToMax(HOMING_SPEED, true);
   } else {
     Serial.println("Homing failed!");
   }
@@ -95,9 +95,11 @@ void processCommand(DynamicJsonDocument doc) {
     Serial.println(action);
     
     if (action.equals("move")) {
+      // position = 0-100
+      // time = ms ?
       int position = command["position"];
       int time = command["time"];
-      boolean replace = command["replace"] == true;
+      boolean replace = (command["replace"] == true);
       Stroker.appendToStreaming(position, time, replace);
     
     } else if (action.equals("startStreaming")) {
