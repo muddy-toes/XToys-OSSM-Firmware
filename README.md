@@ -1,3 +1,15 @@
+
+Muddy's Notes:
+
+The modifications on this fork are for my own benefit and may include adjustments that won't be appropriate for your machine.  Particularly note
+that I have changed the steps-per-revolution from 2000 to 800 to match the official OSSM firmware.
+
+Review the differences before flashing this to your OSSM.
+
+Uses my fork of StrokeEngine.  Check it out into lib/StrokeEngine under your checkout of this repo.
+
+---------------------------
+
 Firmware for controlling the [OSSM (Open Source Sex Machine)](https://github.com/KinkyMakers/OSSM-hardware) via the [XToys.app](https://xtoys.app) website.
 
 The firmware enables the OSSM to be controlled via serial, Bluetooth or websocket commands.
