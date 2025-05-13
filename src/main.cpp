@@ -19,7 +19,7 @@ boolean prefUseBluetooth;
 
 float currentSpeedPercentage = 0; // speed as a value from 0-100
 
-StaticJsonDocument<512> doc;
+StaticJsonDocument<1024> doc;
 
 StrokeEngine Stroker;
 
@@ -298,9 +298,10 @@ void loop() {
 
   #if COMPILE_SERIAL
     // read new commands from serial
-    while (Serial.available()) {
-      deserializeJson(doc, Serial);
-      processCommand(doc);
+    if( Serial.available() ) {
+      if( deserializeJson(doc, Serial) == DeserializationError::Ok ) {
+        processCommand(doc);
+      }
     }
   #endif
 };
