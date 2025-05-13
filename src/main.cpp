@@ -82,9 +82,8 @@ void homingNotification(bool isHomed) {
 void updateSpeed () {
   // convert from 0-100% to min-max in mm, taking into account current stroke length
   float newSpeed = currentSpeedPercentage * (SPEED_UPPER_LIMIT - SPEED_LOWER_LIMIT) / 100 + SPEED_LOWER_LIMIT;
-  // MUDDY: Maintain constant speed regardless of stroke length
-  // float percentOfStroke = Stroker.getStroke() / Stroker.getMaxDepth(); // scale speed faster if stroke is smaller
-  // newSpeed /= percentOfStroke;
+  float percentOfStroke = Stroker.getStroke() / Stroker.getMaxDepth(); // scale speed faster if stroke is smaller
+  newSpeed /= (percentOfStroke * 1.25);
   Stroker.setSpeed(newSpeed, true);
 }
 
