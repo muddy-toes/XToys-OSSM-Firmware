@@ -8,6 +8,20 @@ Review the differences before flashing this to your OSSM.
 
 Uses my fork of StrokeEngine.  Check it out into lib/StrokeEngine under your checkout of this repo.
 
+This firmware does NOT support the wired controller.
+
+Serial connectivity still drops after some time and I don't know why, but Bluetooth has been quite stable for me.
+
+Sensorless homing is still hit-or-miss.  I recommend using manual homing.  When connecting the OSSM in XToys, push the effector all the way in so the business end is touching the motor.  Measure the amount of rail you can see sticking out the back.  Only measure the silver rail, from where it comes out of the housing to where it goes into the end stop piece.  Enter the distance in mm into the manual homing distance and hit the homing button.  It will move all the way out and stop.  If it skips the belt at the end, you entered too high of a number.
+
+Important safety notes that apply here as well as to the main XToys firmware:
+
+  1. In positition streaming mode, depending on the pattern you run, the machine can move very erratically and suddenly.  That is correct behaviour, because it needs to be able to make any move the pattern presents it with.  You should preview any patterns or funscripts you intend to use for play BEFORE using them during play.
+  2. Once you connect your OSSM to XToys, you should try all the functionality.  Try all the controls to get a feel for how the machine reacts to various things before it's in contact with a human.
+  3. If you're going to host a public session on XToys, I recommend disabling position mode.  You can do that by clicking "OSSM" under the bluetooth button in your OSSM block in XToys, then click Edit.  Set "Enabled Modes" to Speed.  
+
+I've added a firmware_merged.bin file that's ready to flash if you aren't into compiling it.  It's got Bluetooth enabled, not WiFi.  It's the same file I run on my OSSM where it's worked well, but of course use at your own risk.
+
 ---------------------------
 
 Firmware for controlling the [OSSM (Open Source Sex Machine)](https://github.com/KinkyMakers/OSSM-hardware) via the [XToys.app](https://xtoys.app) website.
@@ -28,6 +42,7 @@ The firmware can be installed directly from the XToys website via these steps:
 1. On your OSSM motor set the DIP switches to:  
 ![S1=Off, S2=On, S3=On, S4=Off, S6=Off](ossm-dip.png)  
 **Note:** If the dildo is mounted on the left side of the OSSM (the side with the USB port) then flip S6 to ON instead
+**Muddy's Note:** If running Muddy-toes' fork, do not change your switches from the official firmware settings.  Leave S4 On for 800 Steps/Rotation.
 2. Connect your OSSM via USB cable.
 3. Download and extract the repository.
 4. Install [Visual Studio Code](https://code.visualstudio.com) and the [PlatformIO](https://platformio.org/platformio-ide) extension.
