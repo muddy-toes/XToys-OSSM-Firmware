@@ -51,45 +51,46 @@ namespace BLEManager {
     // Initiate Bluetooth
     //###################
     Serial.println("Initializing BLE Server...");
-    BLEDevice::init(bleName.c_str());
-    pServer = BLEDevice::createServer();
+    NimBLEDevice::init(bleName.c_str());
+    pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
     
-    infoService = pServer->createService(BLEUUID((uint16_t) 0x180a));
+    infoService = pServer->createService(NimBLEUUID((uint16_t) 0x180a));
     BLE2904* softwareVersionDescriptor = new BLE2904();
     softwareVersionDescriptor->setFormat(BLE2904::FORMAT_UINT8);
     softwareVersionDescriptor->setNamespace(1);
     softwareVersionDescriptor->setUnit(0x27ad);
 
-    softwareAPIVersionCharacteristic = infoService->createCharacteristic((uint16_t) 0x2a28, BLECharacteristic::PROPERTY_READ);
+    softwareAPIVersionCharacteristic = infoService->createCharacteristic((uint16_t) 0x2a28, NIMBLE_PROPERTY::READ);
     softwareAPIVersionCharacteristic->addDescriptor(softwareVersionDescriptor);
-    softwareAPIVersionCharacteristic->addDescriptor(new BLE2902());
     softwareAPIVersionCharacteristic->setValue(API_VERSION);
 
-    softwareFirmwareVersionCharacteristic = infoService->createCharacteristic((uint16_t) 0x2a26, BLECharacteristic::PROPERTY_READ);
+    softwareFirmwareVersionCharacteristic = infoService->createCharacteristic((uint16_t) 0x2a26, NIMBLE_PROPERTY::READ);
     softwareFirmwareVersionCharacteristic->addDescriptor(softwareVersionDescriptor);
-    softwareFirmwareVersionCharacteristic->addDescriptor(new BLE2902());
     softwareFirmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
     infoService->start();
     
     pService = pServer->createService(SERVICE_UUID);
     controlCharacteristic = pService->createCharacteristic(
                                           CONTROL_UUID,
-                                          BLECharacteristic::PROPERTY_READ |
-                                          BLECharacteristic::PROPERTY_WRITE |
-                                          BLECharacteristic::PROPERTY_NOTIFY
+                                          NIMBLE_PROPERTY::READ |
+                                          NIMBLE_PROPERTY::WRITE |
+                                          NIMBLE_PROPERTY::NOTIFY
                                         );
-    controlCharacteristic->addDescriptor(new BLE2902());
     controlCharacteristic->setValue("");
     controlCharacteristic->setCallbacks(new MessageCallbacks());
 
     pService->start();
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    NimBLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
     pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
     pAdvertising->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
+    NimBLEDevice::startAdvertising();
     Serial.println("Done");
   };
+
+  bool isConnected() {
+    return deviceConnected;
+  } 
 };
