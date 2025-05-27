@@ -3,6 +3,10 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include "AiEsp32RotaryEncoder.h"
+#include "utils/analog.h"
+#include <U8g2lib.h>
+#include "display.h"
 
 #include "config.h"
 #if COMPILE_BLUETOOTH
@@ -19,7 +23,7 @@ boolean prefUseBluetooth;
 
 float currentSpeedPercentage = 0; // speed as a value from 0-100
 
-StaticJsonDocument<1024> doc;
+//StaticJsonDocument<1024> doc;
 
 StrokeEngine Stroker;
 
@@ -51,13 +55,12 @@ static sensorlessHomeProperties sensorlessHome = {
   .currentLimit = 1
 };
 
+static DisplayManager displayManager;
+
 void homingNotification(bool isHomed) {
   if (isHomed) {
-    Serial.println("Found home - Ready to rumble!");
     Stroker.moveToMax(HOMING_SPEED, true);
-  } else {
-    Serial.println("Homing failed!");
-  }
+  } 
   DynamicJsonDocument doc(200);
   JsonArray root = doc.to<JsonArray>();
   JsonObject versionInfo = root.createNestedObject();
@@ -76,7 +79,29 @@ void homingNotification(bool isHomed) {
       BLEManager::sendNotification(jsonString);
     }
   #endif
-  Serial.println(jsonString);
+  //Serial.println(jsonString);
+}
+
+// Encoder stuff
+static AiEsp32RotaryEncoder encoder = AiEsp32RotaryEncoder(
+    encoderA, encoderB, encoderSwitch,
+    encoderPower, encoderStepsPerNotch);
+
+static void IRAM_ATTR readEncoderISR() { encoder.readEncoder_ISR(); }
+
+static void initEncoder() {
+    // we must initialize rotary encoder
+    encoder.begin();
+    encoder.setup(readEncoderISR);
+    // set boundaries and if values should cycle or not
+    // in this example we will set possible values between 0 and 1000;
+    encoder.setBoundaries(
+        0, 100, false);  // minValue, maxValue, circleValues true|false (when max
+                        // go to min and vice versa)
+    encoder.setAcceleration(0);
+
+    // really disabled acceleration
+    encoder.disableAcceleration();
 }
 
 void updateSpeed () {
@@ -91,8 +116,8 @@ void processCommand(DynamicJsonDocument doc) {
   JsonArray commands = doc.as<JsonArray>();
   for(JsonObject command : commands) {
     String action = command["action"];
-    Serial.println("Action:");
-    Serial.println(action);
+    //Serial.println("Action:");
+    //Serial.println(action);
     
     if (action.equals("move")) {
       // position = 0-100
@@ -233,9 +258,20 @@ void processCommand(DynamicJsonDocument doc) {
 };
 
 void onToyMessage (String msg) {
-  deserializeJson(doc, msg);
-  processCommand(doc);
+  StaticJsonDocument<512> localDoc;
+  if( deserializeJson(localDoc, msg) == DeserializationError::Ok ) {
+    processCommand(localDoc);
+  }
 };
+
+void onBLEToyMessage (String msg) {
+  StaticJsonDocument<512> localDoc;
+  if( deserializeJson(localDoc, msg) == DeserializationError::Ok ) {
+    processCommand(localDoc);
+  }
+};
+
+
 
 void setup() {
   Serial.begin(115200);
@@ -248,32 +284,49 @@ void setup() {
   Serial.println("Websocket Enabled: " + String(prefUseWebsocket));
   Serial.println("Bluetooth Enabled: " + String(prefUseBluetooth));
 
+  displayManager.begin();
+
   #if COMPILE_WEBSOCKET
     if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
       
       String ssid = preferences.getString("ssid", WIFI_SSID);
       String password = preferences.getString("password", WIFI_PSK);
+      displayManager.setWiFiIcon(ICON_AVAILABLE);
 
       // Connect to WiFi
+      displayManager.showConnecting();
       Serial.println("Setting up WiFi");
       WiFi.begin(ssid.c_str(), password.c_str());
-      while (WiFi.status() != WL_CONNECTED) {
+      int wifiTimeout = 0;
+      // Wait for up to 15 seconds for WiFi to connect
+      while (WiFi.status() != WL_CONNECTED && wifiTimeout < 30) {
           Serial.print(".");
+          displayManager.showSpinner(wifiTimeout % 4);
           delay(500);
+          wifiTimeout++;
       }
-      Serial.println("Connected.");
-      Serial.print("IP=");
-      Serial.println(WiFi.localIP());
 
-      // Start websocket server
-      WebsocketManager::setup(&onToyMessage);
+      if (WiFi.status() == WL_CONNECTED) {
+        displayManager.setWiFiIcon(ICON_CONNECTED);
+        displayManager.showConnected(WiFi.localIP());
+        Serial.print("IP=");
+        Serial.println(WiFi.localIP());
+        // Start websocket server
+        WebsocketManager::setup(&onToyMessage);
+      } else {
+        Serial.print("Unable to connect to WiFi, disabling Websocket");
+        displayManager.showConnectFailed();
+        delay(2000);
+      }
+      
     }
   #endif
 
   #if COMPILE_BLUETOOTH
     if (prefUseBluetooth) {
+      displayManager.setBluetoothIcon(ICON_AVAILABLE);
       String bleName = preferences.getString("bleName", BLE_NAME);
-      BLEManager::setup(bleName, &onToyMessage);
+      BLEManager::setup(bleName, &onBLEToyMessage);
       Serial.print("BLE=");
       Serial.println(bleName);
     }
@@ -284,11 +337,19 @@ void setup() {
   ledcAttachPin(PWM, 0);
   ledcWrite(0, 0);
 
+  // Setup Encoder
+  initEncoder();
+
   // Setup Stroke Engine
   Stroker.begin(&strokingMachine, &servoMotor);
+
 };
 
 void loop() {
+  static uint64_t nextUpdate=0;
+  static float lastanalogValue=0;
+  static float lastEncoderValue=0;
+  bool lastBLEconnected = false;
 
   #if COMPILE_WEBSOCKET
     if (AUTO_START_BLUETOOTH_OR_WEBSOCKET || prefUseWebsocket) {
@@ -296,12 +357,46 @@ void loop() {
     }
   #endif
 
+  #if COMPILE_BLUETOOTH
+    if (prefUseBluetooth) {
+      if (BLEManager::isConnected() != lastBLEconnected) {
+        lastBLEconnected = BLEManager::isConnected();
+        if (lastBLEconnected) {
+          displayManager.setBluetoothIcon(ICON_CONNECTED);
+        } else {
+          displayManager.setBluetoothIcon(ICON_AVAILABLE);
+        }
+      } 
+    }
+  #endif
+
   #if COMPILE_SERIAL
     // read new commands from serial
     if( Serial.available() ) {
-      if( deserializeJson(doc, Serial) == DeserializationError::Ok ) {
-        processCommand(doc);
+      displayManager.setBluetoothIcon(ICON_CONNECTED);
+      StaticJsonDocument<512> localDoc;
+      if( deserializeJson(localDoc, Serial) == DeserializationError::Ok ) {
+        processCommand(localDoc);
       }
     }
   #endif
+
+   // Output remote and depth values to serial
+  if (nextUpdate < millis()) {
+    char msg[200];
+    int used=1;
+    nextUpdate = millis() + 100;
+    //Serial.printf("Free heap: %i\n", ESP.getFreeHeap());
+    msg[0] = '{';
+    float analogValue = getAnalogAveragePercent(speedPotPin, 10);
+    int encoderValue = encoder.readEncoder();
+    used += snprintf(msg+used, sizeof(msg)-used, "\"analog\": %.0f,", analogValue);
+    used += snprintf(msg+used, sizeof(msg)-used, "\"encoder\": %i,", encoderValue);
+    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i", Stroker.getDepthPercent());
+    snprintf(msg+used, sizeof(msg)-used, "}");
+    Serial.println(msg);
+
+    // Show running screen on display
+    displayManager.showRunning();
+  }
 };
