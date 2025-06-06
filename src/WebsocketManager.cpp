@@ -163,8 +163,10 @@ namespace WebsocketManager {
     // other clients
     void MessageHandler::onMessage(WebsocketInputStreambuf * inbuf) {
         // Get the input message
-        std::istream is(inbuf);
-        std::string msg((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+        std::ostringstream ss;
+        std::string msg;
+        ss << inbuf;
+        msg = ss.str();
         msgReceivedCallback(msg.c_str());
     }
 
