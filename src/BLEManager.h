@@ -1,9 +1,5 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLE2902.h>
-#include <BLE2904.h>
+#include <NimBLEDevice.h>
 
 #include "config.h"
 
@@ -23,6 +19,7 @@ namespace BLEManager {
   extern BLEService *infoService;
   extern BLECharacteristic *softwareVersionCharacteristic;
 
+
   class MessageCallbacks : public BLECharacteristicCallbacks {
     // Received request to update a setting
     void onWrite(BLECharacteristic *characteristic);
@@ -30,13 +27,11 @@ namespace BLEManager {
 
   // Client connected to OSSM over BLE
   class ServerCallbacks: public BLEServerCallbacks {
-
     void onConnect(BLEServer* pServer);
-
     void onDisconnect(BLEServer* pServer);
   };
 
   void sendNotification (String message);
-
   void setup (String bleName, void (*msgReceivedCallback)(String));
+  bool isConnected();
 };
