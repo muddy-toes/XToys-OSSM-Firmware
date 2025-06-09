@@ -94,7 +94,6 @@ static void initEncoder() {
     encoder.begin();
     encoder.setup(readEncoderISR);
     // set boundaries and if values should cycle or not
-    // in this example we will set possible values between 0 and 1000;
     encoder.setBoundaries(
         0, 100, false);  // minValue, maxValue, circleValues true|false (when max
                         // go to min and vice versa)
@@ -112,12 +111,12 @@ void updateSpeed () {
   Stroker.setSpeed(newSpeed, true);
 }
 
-void processCommand(DynamicJsonDocument doc) {
+void processCommand(DynamicJsonDocument doc) {;
+  //serializeJsonPretty(doc, Serial); Serial.println();
+
   JsonArray commands = doc.as<JsonArray>();
   for(JsonObject command : commands) {
     String action = command["action"];
-    //Serial.println("Action:");
-    //Serial.println(action);
     
     if (action.equals("move")) {
       // position = 0-100
@@ -157,25 +156,24 @@ void processCommand(DynamicJsonDocument doc) {
       }
     
     } else if (action.equals("configureWebsocket")) {
-      
+      Serial.print("Configuring Websocket");
       String ssid =  command["ssid"];
       String password = command["password"];
 
       preferences.putString("ssid", ssid);
       preferences.putString("password", password);
       preferences.putBool("useWebsocket", true);
-      preferences.putBool("useBluetooth", false);
       preferences.end();
 
       delay(1000);
       ESP.restart();
 
     } else if (action.equals("configureBluetooth")) {
+      Serial.print("Configuring Bluetooth");
       
       String bleName =  command["name"];
 
       preferences.putString("bleName", bleName);
-      preferences.putBool("useWebsocket", false);
       preferences.putBool("useBluetooth", true);
       preferences.end();
 
@@ -347,8 +345,6 @@ void setup() {
 
 void loop() {
   static uint64_t nextUpdate=0;
-  static float lastanalogValue=0;
-  static float lastEncoderValue=0;
   bool lastBLEconnected = false;
 
   #if COMPILE_WEBSOCKET
@@ -385,7 +381,7 @@ void loop() {
   if (nextUpdate < millis()) {
     char msg[200];
     int used=1;
-    nextUpdate = millis() + 100;
+    nextUpdate = millis() + 200;
     //Serial.printf("Free heap: %i\n", ESP.getFreeHeap());
     msg[0] = '{';
     float analogValue = getAnalogAveragePercent(speedPotPin, 10);
@@ -394,7 +390,14 @@ void loop() {
     used += snprintf(msg+used, sizeof(msg)-used, "\"encoder\": %i,", encoderValue);
     used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i", Stroker.getDepthPercent());
     snprintf(msg+used, sizeof(msg)-used, "}");
+    // send to serial
     Serial.println(msg);
+    if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
+      if (WiFi.status() == WL_CONNECTED) {
+        // Send to websocket if connected
+        WebsocketManager::sendMessage(msg);
+        }
+    }
 
     // Show running screen on display
     displayManager.showRunning();
