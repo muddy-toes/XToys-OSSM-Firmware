@@ -1,5 +1,9 @@
+Firmware for controlling the [OSSM (Open Source Sex Machine)](https://github.com/KinkyMakers/OSSM-hardware) via the [XToys.app](https://xtoys.app) website.
 
-Muddy's Notes:
+The firmware enables the OSSM to be controlled via serial, Bluetooth or websocket commands.
+
+
+**Muddy's Notes:**
 
 The modifications on this fork are for my own benefit and may include adjustments that won't be appropriate for your machine.  Particularly note
 that I have changed the steps-per-revolution from 2000 to 800 to match the official OSSM firmware.
@@ -8,7 +12,9 @@ Review the differences before flashing this to your OSSM.
 
 Uses my fork of StrokeEngine.  Check it out into lib/StrokeEngine under your checkout of this repo.
 
-This firmware does NOT support the wired controller.
+Thanks to @Harletta for adding limited support for the wired controller.  The display will now show the connected wifi IP along with connectivity icons.  The knobs will send info to XToys via JSON for scripting but do not directly control the OSSM.
+
+Now compilable with both Bluetooth and WiFi enabled at the same time.  You can configure the BT name and WiFi network settings using Harletta's [BLE WiFi Configurator](https://github.com/Harletta/configure-ossm)
 
 Serial connectivity still drops after some time and I don't know why, but Bluetooth has been quite stable for me.
 
@@ -20,13 +26,12 @@ Important safety notes that apply here as well as to the main XToys firmware:
   2. Once you connect your OSSM to XToys, you should try all the functionality.  Try all the controls to get a feel for how the machine reacts to various things before it's in contact with a human.
   3. If you're going to host a public session on XToys, I recommend disabling position mode.  You can do that by clicking "OSSM" under the bluetooth button in your OSSM block in XToys, then click Edit.  Set "Enabled Modes" to Speed.  
 
-I've added a firmware_merged.bin file that's ready to flash if you aren't into compiling it.  It's got Bluetooth enabled, not WiFi.  It's the same file I run on my OSSM where it's worked well, but of course use at your own risk.
+I've added a firmware_merged.bin file that's ready to flash if you aren't into compiling it.  It's the same file I run on my OSSM where it's worked well, but of course use at your own risk.  You can flash it with the [Adafruit Web Flasher](https://adafruit.github.io/Adafruit_WebSerial_ESPTool/).
 
 ---------------------------
 
-Firmware for controlling the [OSSM (Open Source Sex Machine)](https://github.com/KinkyMakers/OSSM-hardware) via the [XToys.app](https://xtoys.app) website.
-
-The firmware enables the OSSM to be controlled via serial, Bluetooth or websocket commands.
+<details>
+<summary>Original README - stale info</summary>
 
 Uses a [slightly modified version](https://github.com/denialtek/StrokeEngine) of the [StrokeEngine](https://github.com/theelims/StrokeEngine) library to interact with the OSSM.
 
@@ -41,7 +46,7 @@ The firmware can be installed directly from the XToys website via these steps:
 
 1. On your OSSM motor set the DIP switches to:  
 ![S1=Off, S2=On, S3=On, S4=Off, S6=Off](ossm-dip.png)  
-**Note:** If the dildo is mounted on the left side of the OSSM (the side with the USB port) then flip S6 to ON instead
+**Note:** If the dildo is mounted on the left side of the OSSM (the side with the USB port) then flip S6 to ON instead\
 **Muddy's Note:** If running Muddy-toes' fork, do not change your switches from the official firmware settings.  Leave S4 On for 800 Steps/Rotation.
 2. Connect your OSSM via USB cable.
 3. Download and extract the repository.
@@ -65,6 +70,11 @@ If you use non-standard pins on the ESP32 this can also be adjusted here.
 6. Click the PlatformIO icon in the left side bar and then click the Upload button (Project Tasks > esp32dev > Upload).
 
 **NOTE: The firmware will not work if both COMPILE_BLUETOOTH and COMPILE_WEBSOCKET are set to true. Only use one or the other.**
+
+</details>
+
+<details>
+<summary>XToys API Info</summary>
 
 # Command Structure
 
@@ -105,3 +115,5 @@ Actions that are in the OSSM firmware code but are not sent via XToys currently:
 - "retract"
 - "extend"
 - "setSensation"
+
+</details>
