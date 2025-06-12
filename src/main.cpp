@@ -22,6 +22,7 @@ boolean prefUseWebsocket;
 boolean prefUseBluetooth;
 
 float currentSpeedPercentage = 0; // speed as a value from 0-100
+long rebootInMillis = 0; // if > 0, reboot in this many ms
 
 //StaticJsonDocument<1024> doc;
 
@@ -165,8 +166,8 @@ void processCommand(DynamicJsonDocument doc) {;
       preferences.putBool("useWebsocket", true);
       preferences.end();
 
-      delay(1000);
-      ESP.restart();
+      rebootInMillis = millis() + 3000; // reboot in 3 seconds
+
 
     } else if (action.equals("configureBluetooth")) {
       Serial.print("Configuring Bluetooth");
@@ -177,8 +178,7 @@ void processCommand(DynamicJsonDocument doc) {;
       preferences.putBool("useBluetooth", true);
       preferences.end();
 
-      delay(1000);
-      ESP.restart();
+      rebootInMillis = millis() + 3000; // reboot in 3 seconds
 
     } else if (action.equals("stop")) {
       Stroker.stopMotion();
@@ -346,6 +346,11 @@ void setup() {
 void loop() {
   static uint64_t nextUpdate=0;
   bool lastBLEconnected = false;
+
+  if (rebootInMillis > 0 && millis() > rebootInMillis) {
+    Serial.println("Rebooting...");
+    ESP.restart();
+  }
 
   #if COMPILE_WEBSOCKET
     if (AUTO_START_BLUETOOTH_OR_WEBSOCKET || prefUseWebsocket) {
