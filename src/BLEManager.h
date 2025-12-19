@@ -1,11 +1,16 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <freertos/queue.h>
 
 #include "config.h"
 
+#define MESSAGE_QUEUE_SIZE 16
+#define MAX_MESSAGE_LENGTH 512
+
 namespace BLEManager {
-  
+
   extern bool deviceConnected;
+  extern QueueHandle_t messageQueue;
 
   // Callback function to call any time a message is received
   extern void (*msgReceivedCallback)(String);
@@ -33,5 +38,6 @@ namespace BLEManager {
 
   void sendNotification (String message);
   void setup (String bleName, void (*msgReceivedCallback)(String));
+  void processQueue();
   bool isConnected();
 };

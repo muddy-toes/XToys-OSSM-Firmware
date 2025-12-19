@@ -2,8 +2,9 @@
 #include "config.h"
 
 namespace BLEManager {
-  
+
   bool deviceConnected = false;
+  QueueHandle_t messageQueue = nullptr;
 
   void (*msgReceivedCallback)(String);
 
@@ -18,10 +19,13 @@ namespace BLEManager {
 
   void MessageCallbacks::onWrite(BLECharacteristic *characteristic) {
     std::string cppStr = characteristic->getValue();
-    String cmd = String(cppStr.c_str());
-    // TODO: process settings update
     if (characteristic->getUUID().equals(CONTROL_UUID)) {
-      msgReceivedCallback(cmd);
+      if (messageQueue != nullptr && cppStr.length() < MAX_MESSAGE_LENGTH) {
+        char buffer[MAX_MESSAGE_LENGTH];
+        strncpy(buffer, cppStr.c_str(), MAX_MESSAGE_LENGTH - 1);
+        buffer[MAX_MESSAGE_LENGTH - 1] = '\0';
+        xQueueSend(messageQueue, buffer, 0);  // Non-blocking, drop if full
+      }
     }
   };
 
@@ -43,9 +47,20 @@ namespace BLEManager {
     controlCharacteristic->notify(true);
   }
 
+  void processQueue() {
+    if (messageQueue == nullptr || msgReceivedCallback == nullptr) return;
+    char buffer[MAX_MESSAGE_LENGTH];
+    while (xQueueReceive(messageQueue, buffer, 0) == pdTRUE) {
+      msgReceivedCallback(String(buffer));
+    }
+  }
+
   void setup (String bleName, void (*msgReceivedCallback)(String)) {
 
     BLEManager::msgReceivedCallback = msgReceivedCallback;
+
+    // Create message queue for decoupling BLE callbacks from processing
+    messageQueue = xQueueCreate(MESSAGE_QUEUE_SIZE, MAX_MESSAGE_LENGTH);
 
     //###################
     // Initiate Bluetooth
