@@ -360,6 +360,8 @@ void loop() {
 
   #if COMPILE_BLUETOOTH
     if (prefUseBluetooth) {
+      BLEManager::processQueue();
+
       if (BLEManager::isConnected() != lastBLEconnected) {
         lastBLEconnected = BLEManager::isConnected();
         if (lastBLEconnected) {
@@ -367,7 +369,7 @@ void loop() {
         } else {
           displayManager.setBluetoothIcon(ICON_AVAILABLE);
         }
-      } 
+      }
     }
   #endif
 
