@@ -1,0 +1,3 @@
+[submodule "lib/StrokeEngine"]
+	path = lib/StrokeEngine
+	url = https://github.com/muddy-toes/StrokeEngine.git
