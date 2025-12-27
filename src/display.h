@@ -24,15 +24,20 @@ public:
     void setBluetoothIcon(IconState state);
     void setSerialIcon(IconState state);
 
+    // Indicators
+    void setPositionIndicator(float positionAsAPercentage);
+
 private:
     U8G2_SSD1306_128X64_NONAME_F_HW_I2C display;
     IconState wifiState = ICON_OFF;
     IconState btState = ICON_OFF;
     IconState serialState = ICON_AVAILABLE;
+    float strokerPosition;
     IPAddress myip = IPAddress(0, 0, 0, 0);
 
     void drawIcons();
     void drawWiFiIcon(int x, int y, IconState state);
     void drawBluetoothIcon(int x, int y, IconState state);
     void drawSerialIcon(int x, int y, IconState state);
+    void drawPositionIndicator(int x, int y, int width, int height, float positionAsAPercentage);
 };

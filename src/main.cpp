@@ -384,7 +384,8 @@ void loop() {
     }
   #endif
 
-   // Output remote and depth values to serial
+   // Output remote and depth values to serial 
+  displayManager.setPositionIndicator(Stroker.getDepthPercent());
   if (nextUpdate < millis()) {
     char msg[200];
     int used=1;

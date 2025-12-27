@@ -67,6 +67,14 @@ void DisplayManager::drawSerialIcon(int x, int y, IconState state) {
     }
 }
 
+void DisplayManager::drawPositionIndicator(int x, int y, int width, int height, float positionAsAPercentage) {
+    int innerWidth = width-2;
+    int indicatorPosition = innerWidth-int(strokerPosition*innerWidth/100.0);
+    display.setDrawColor(1);
+    display.drawFrame(x, y, width, height);
+    display.drawVLine(indicatorPosition, y+1, height-2);
+}
+
 void DisplayManager::drawIcons() {
     // Draw icons at the top right, spaced horizontally
     int x = 128 - 14;
@@ -75,6 +83,7 @@ void DisplayManager::drawIcons() {
     drawBluetoothIcon(x, 0, btState);
     x -= 14;
     drawSerialIcon(x, 0, serialState);
+    drawPositionIndicator(0, 4, x, 8, strokerPosition);
 }
 
 void DisplayManager::setWiFiIcon(IconState state) {
@@ -85,6 +94,9 @@ void DisplayManager::setBluetoothIcon(IconState state) {
 }
 void DisplayManager::setSerialIcon(IconState state) {
     serialState = state;
+}
+void DisplayManager::setPositionIndicator(float positionAsAPercentage) {
+    strokerPosition = positionAsAPercentage;
 }
 
 void DisplayManager::begin() {
