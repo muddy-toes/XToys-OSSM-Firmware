@@ -7,6 +7,7 @@
 #include "utils/analog.h"
 #include <U8g2lib.h>
 #include "display.h"
+#include "StreamingController.h"
 
 #include "config.h"
 #if COMPILE_BLUETOOTH
@@ -14,6 +15,9 @@
 #endif
 #if COMPILE_WEBSOCKET
   #include "WebsocketManager.h"
+#endif
+#if COMPILE_SERIAL
+  #include "SerialManager.h"
 #endif
 
 // prefs configured during firmware flash from XToys website
@@ -27,6 +31,7 @@ long rebootInMillis = 0; // if > 0, reboot in this many ms
 //StaticJsonDocument<1024> doc;
 
 StrokeEngine Stroker;
+StreamingController streamingController;
 
 static motorProperties servoMotor {  
   .maxSpeed = MAX_SPEED,                
@@ -53,7 +58,7 @@ static endstopProperties endstop = {
 
 static sensorlessHomeProperties sensorlessHome = {
   .currentPin = SERVO_SENSORLESS,
-  .currentLimit = 1
+  .currentLimit = 1.5  // matches official OSSM firmware
 };
 
 static DisplayManager displayManager;
@@ -121,14 +126,23 @@ void processCommand(DynamicJsonDocument doc) {;
     
     if (action.equals("move")) {
       // position = 0-100
-      // time = ms ?
+      // time = ms (duration to reach position)
       int position = command["position"];
       int time = command["time"];
       boolean replace = (command["replace"] == true);
-      Stroker.appendToStreaming(position, time, replace);
-    
+      // Use new look-ahead StreamingController instead of StrokeEngine
+      streamingController.addTarget(position, time, replace);
+
     } else if (action.equals("startStreaming")) {
-      Stroker.startStreaming();
+      // Initialize streaming controller with current limits from Stroker
+      // This must be called after homing so limits are valid
+      if (Stroker.getState() == READY || Stroker.getState() == PATTERN || Stroker.getState() == STREAMING) {
+        // Update stroke limits based on current depth/stroke settings
+        int32_t strokeMin = Stroker.getDepthSteps() - Stroker.getStrokeSteps();
+        int32_t strokeMax = Stroker.getDepthSteps();
+        streamingController.setStrokeLimits(strokeMin, strokeMax);
+        streamingController.start();
+      }
 
     // homing
     } else if (action.equals("home")) {
@@ -153,7 +167,7 @@ void processCommand(DynamicJsonDocument doc) {;
       } else if (type.equals("sensorless")) {
         float rodLength = command["length"];
         Stroker.setPhysicalTravel(rodLength);
-        Stroker.enableAndSensorlessHome(&sensorlessHome, homingNotification, HOMING_SPEED);
+        Stroker.enableAndSensorlessHome(&sensorlessHome, homingNotification, SENSORLESS_HOMING_SPEED);
       }
     
     } else if (action.equals("configureWebsocket")) {
@@ -181,6 +195,8 @@ void processCommand(DynamicJsonDocument doc) {;
       rebootInMillis = millis() + 3000; // reboot in 3 seconds
 
     } else if (action.equals("stop")) {
+      // Stop both StreamingController and Stroker
+      streamingController.stop();
       Stroker.stopMotion();
       
     } else if (action.equals("setPattern")) {
@@ -196,10 +212,20 @@ void processCommand(DynamicJsonDocument doc) {;
       float stroke = command["stroke"];
       Stroker.setStroke(stroke / 100.0 * Stroker.getMaxDepth(), true);
       updateSpeed();
-      
+      // Update StreamingController limits
+      streamingController.setStrokeLimits(
+        Stroker.getDepthSteps() - Stroker.getStrokeSteps(),
+        Stroker.getDepthSteps()
+      );
+
     } else if (action.equals("setDepth")) {
       float depth = command["depth"];
       Stroker.setDepth(depth / 100.0 * Stroker.getMaxDepth(), true);
+      // Update StreamingController limits
+      streamingController.setStrokeLimits(
+        Stroker.getDepthSteps() - Stroker.getStrokeSteps(),
+        Stroker.getDepthSteps()
+      );
 
     } else if (action.equals("setPhysicalTravel")) {
       float travel = command["travel"];
@@ -330,6 +356,11 @@ void setup() {
     }
   #endif
 
+  #if COMPILE_SERIAL
+    displayManager.setSerialIcon(ICON_AVAILABLE);
+    SerialManager::setup(&onToyMessage);
+  #endif
+
   // Set PWM output with 8bit resolution and 5kHz
   ledcSetup(0, 5000, 8);
   ledcAttachPin(PWM, 0);
@@ -341,11 +372,31 @@ void setup() {
   // Setup Stroke Engine
   Stroker.begin(&strokingMachine, &servoMotor);
 
+  // Setup StreamingController with safety limits from Stroker
+  // Note: Full initialization happens when startStreaming is called,
+  // after homing establishes valid position limits
+  streamingController.begin(
+    Stroker.getServo(),
+    Stroker.getMinStep(),
+    Stroker.getMaxStep(),
+    Stroker.getMaxStepPerSecond(),
+    Stroker.getMaxStepAcceleration(),
+    Stroker.getStepsPerMillimeter()
+  );
+  Serial.println("StreamingController initialized");
+
 };
 
 void loop() {
   static uint64_t nextUpdate=0;
+  static uint64_t nextStreamingTick=0;
   bool lastBLEconnected = false;
+
+  // StreamingController tick - runs every 10ms when active
+  if (millis() >= nextStreamingTick) {
+    nextStreamingTick = millis() + 10;
+    streamingController.tick();
+  }
 
   if (rebootInMillis > 0 && millis() > rebootInMillis) {
     Serial.println("Rebooting...");
@@ -374,13 +425,13 @@ void loop() {
   #endif
 
   #if COMPILE_SERIAL
-    // read new commands from serial
-    if( Serial.available() ) {
-      displayManager.setBluetoothIcon(ICON_CONNECTED);
-      StaticJsonDocument<512> localDoc;
-      if( deserializeJson(localDoc, Serial) == DeserializationError::Ok ) {
-        processCommand(localDoc);
-      }
+    SerialManager::loop();
+    SerialManager::processQueue();
+
+    static bool lastSerialConnected = false;
+    if (SerialManager::isConnected() != lastSerialConnected) {
+      lastSerialConnected = SerialManager::isConnected();
+      displayManager.setSerialIcon(lastSerialConnected ? ICON_CONNECTED : ICON_AVAILABLE);
     }
   #endif
 

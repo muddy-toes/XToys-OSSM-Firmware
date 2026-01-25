@@ -14,8 +14,9 @@
 #define RGB_LED           25
 
 // OSSM speed limits
-#define HOMING_SPEED          100
-#define SPEED_UPPER_LIMIT     180 // strokes per minute
+#define HOMING_SPEED              100   // mm/s for manual/endstop homing
+#define SENSORLESS_HOMING_SPEED   25    // mm/s for sensorless homing (must be slow for current detection)
+#define SPEED_UPPER_LIMIT         180   // strokes per minute
 #define SPEED_LOWER_LIMIT     0.5 // strokes per minute
 
 // Only one of Bluetooth or Websockets can be active at once. Compiling and enabling both will break Websockets due to lack of heap space.
