@@ -50,6 +50,10 @@ void StreamingController::setStrokeLimits(int32_t minStep, int32_t maxStep) {
     // Constrain to physical limits
     _strokeMin = constrain(minStep, _minStep, _maxStep);
     _strokeMax = constrain(maxStep, _minStep, _maxStep);
+    // Collapse to point if range is invalid
+    if (_strokeMin > _strokeMax) {
+        _strokeMax = _strokeMin;
+    }
 }
 
 // =============================================================================

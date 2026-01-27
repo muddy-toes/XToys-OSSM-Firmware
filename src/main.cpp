@@ -137,8 +137,8 @@ void processCommand(DynamicJsonDocument doc) {;
       // Initialize streaming controller with current limits from Stroker
       // This must be called after homing so limits are valid
       if (Stroker.getState() == READY || Stroker.getState() == PATTERN || Stroker.getState() == STREAMING) {
-        // Update stroke limits based on current depth/stroke settings
-        int32_t strokeMin = Stroker.getDepthSteps() - Stroker.getStrokeSteps();
+        // XToys: stroke = min position, depth = max position
+        int32_t strokeMin = Stroker.getStrokeSteps();
         int32_t strokeMax = Stroker.getDepthSteps();
         streamingController.setStrokeLimits(strokeMin, strokeMax);
         streamingController.start();
@@ -212,18 +212,18 @@ void processCommand(DynamicJsonDocument doc) {;
       float stroke = command["stroke"];
       Stroker.setStroke(stroke / 100.0 * Stroker.getMaxDepth(), true);
       updateSpeed();
-      // Update StreamingController limits
+      // Update StreamingController limits (stroke = min position, depth = max position)
       streamingController.setStrokeLimits(
-        Stroker.getDepthSteps() - Stroker.getStrokeSteps(),
+        Stroker.getStrokeSteps(),
         Stroker.getDepthSteps()
       );
 
     } else if (action.equals("setDepth")) {
       float depth = command["depth"];
       Stroker.setDepth(depth / 100.0 * Stroker.getMaxDepth(), true);
-      // Update StreamingController limits
+      // Update StreamingController limits (stroke = min position, depth = max position)
       streamingController.setStrokeLimits(
-        Stroker.getDepthSteps() - Stroker.getStrokeSteps(),
+        Stroker.getStrokeSteps(),
         Stroker.getDepthSteps()
       );
 
