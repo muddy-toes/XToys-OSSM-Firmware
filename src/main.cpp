@@ -291,32 +291,14 @@ void setup() {
 
   #if COMPILE_WEBSOCKET
     if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
-      
       String ssid = preferences.getString("ssid", WIFI_SSID);
-      String password = preferences.getString("password", WIFI_PSK);
-      displayManager.setWiFiIcon(ICON_AVAILABLE);
-
-      // Connect to WiFi
-      displayManager.showConnecting();
-      WiFi.begin(ssid.c_str(), password.c_str());
-      int wifiTimeout = 0;
-      // Wait for up to 15 seconds for WiFi to connect
-      while (WiFi.status() != WL_CONNECTED && wifiTimeout < 30) {
-          displayManager.showSpinner(wifiTimeout % 4);
-          delay(500);
-          wifiTimeout++;
+      if (ssid.length() > 0 && !ssid.startsWith("...")) {
+        String password = preferences.getString("password", WIFI_PSK);
+        displayManager.setWiFiIcon(ICON_AVAILABLE);
+        displayManager.showConnecting();
+        WiFi.begin(ssid.c_str(), password.c_str());
+        // Connection check continues in loop() — no blocking here
       }
-
-      if (WiFi.status() == WL_CONNECTED) {
-        displayManager.setWiFiIcon(ICON_CONNECTED);
-        displayManager.showConnected(WiFi.localIP());
-        // Start websocket server
-        WebsocketManager::setup(&onToyMessage);
-      } else {
-        displayManager.showConnectFailed();
-        delay(2000);
-      }
-      
     }
   #endif
 
@@ -373,7 +355,26 @@ void loop() {
 
   #if COMPILE_WEBSOCKET
     if (AUTO_START_BLUETOOTH_OR_WEBSOCKET || prefUseWebsocket) {
-      WebsocketManager::loop();
+      // Async WiFi connection: check status each loop iteration
+      static bool wifiSetupDone = false;
+      if (!wifiSetupDone) {
+        if (WiFi.status() == WL_CONNECTED) {
+          wifiSetupDone = true;
+          displayManager.setWiFiIcon(ICON_CONNECTED);
+          displayManager.showConnected(WiFi.localIP());
+          WebsocketManager::setup(&onToyMessage);
+        } else {
+          // Update spinner while waiting
+          static uint32_t lastSpinnerUpdate = 0;
+          static int spinnerFrame = 0;
+          if (millis() - lastSpinnerUpdate > 500) {
+            lastSpinnerUpdate = millis();
+            displayManager.showSpinner(spinnerFrame++ % 4);
+          }
+        }
+      } else {
+        WebsocketManager::loop();
+      }
     }
   #endif
 
