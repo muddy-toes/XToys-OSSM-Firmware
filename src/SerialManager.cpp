@@ -5,17 +5,18 @@ namespace SerialManager {
     void (*msgReceivedCallback)(String) = nullptr;
     unsigned long lastActivityTime = 0;
 
-    static char lineBuffer[SERIAL_MAX_MESSAGE_LENGTH];
-    static size_t lineIndex = 0;
-    static bool skipUntilNewline = false;
+    static char msgBuffer[SERIAL_MAX_MESSAGE_LENGTH];
+    static size_t bufIndex = 0;
+    static int bracketDepth = 0;
+    static bool overflow = false;
 
     void setup(void (*callback)(String)) {
         msgReceivedCallback = callback;
         messageQueue = xQueueCreate(SERIAL_MESSAGE_QUEUE_SIZE, SERIAL_MAX_MESSAGE_LENGTH);
         lastActivityTime = 0;
-        lineIndex = 0;
-        skipUntilNewline = false;
-        Serial.println("SerialManager initialized");
+        bufIndex = 0;
+        bracketDepth = 0;
+        overflow = false;
     }
 
     void loop() {
@@ -23,22 +24,43 @@ namespace SerialManager {
             char c = Serial.read();
             lastActivityTime = millis();
 
-            if (c == '\n' || c == '\r') {
-                if (!skipUntilNewline && lineIndex > 0) {
-                    lineBuffer[lineIndex] = '\0';
-                    if (messageQueue != nullptr) {
-                        xQueueSend(messageQueue, lineBuffer, 0);
+            // Ignore whitespace outside of a message
+            if (bracketDepth == 0 && (c == '\n' || c == '\r' || c == ' ')) {
+                continue;
+            }
+
+            // Track JSON array bracket depth
+            if (c == '[') {
+                if (bracketDepth == 0) {
+                    // Start of new message
+                    bufIndex = 0;
+                    overflow = false;
+                }
+                bracketDepth++;
+            }
+
+            // Only buffer while inside brackets
+            if (bracketDepth > 0) {
+                if (!overflow && bufIndex < SERIAL_MAX_MESSAGE_LENGTH - 1) {
+                    msgBuffer[bufIndex++] = c;
+                } else {
+                    overflow = true;
+                }
+
+                if (c == ']') {
+                    bracketDepth--;
+                    if (bracketDepth == 0) {
+                        // Complete message
+                        if (!overflow) {
+                            msgBuffer[bufIndex] = '\0';
+                            if (messageQueue != nullptr) {
+                                xQueueSend(messageQueue, msgBuffer, 0);
+                            }
+                        }
+                        bufIndex = 0;
+                        overflow = false;
                     }
                 }
-                lineIndex = 0;
-                skipUntilNewline = false;
-            } else if (skipUntilNewline) {
-                // Skip characters until we see newline
-            } else if (lineIndex < SERIAL_MAX_MESSAGE_LENGTH - 1) {
-                lineBuffer[lineIndex++] = c;
-            } else {
-                Serial.println("Serial buffer overflow - message dropped");
-                skipUntilNewline = true;
             }
         }
     }
