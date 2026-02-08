@@ -80,6 +80,7 @@ void StreamingController::safeMoveTo(int32_t pos) {
 }
 
 void StreamingController::safeSetSpeed(uint32_t speed) {
+    if (!_servo) return;
     // CRITICAL: Clamp speed to maximum
     // Even if trajectory math overflows or bugs out, this catches it
     if (speed > _maxStepPerSecond) {
@@ -93,6 +94,7 @@ void StreamingController::safeSetSpeed(uint32_t speed) {
 }
 
 void StreamingController::safeSetAcceleration(uint32_t accel) {
+    if (!_servo) return;
     // CRITICAL: Clamp acceleration to maximum
     if (accel > _maxStepAcceleration) {
         accel = _maxStepAcceleration;
@@ -242,13 +244,12 @@ void StreamingController::drainQueue() {
             // Start fresh from now
             deadline = now + cmd.duration_ms;
         }
-        _lastDeadline = deadline;
-
         // Skip this command if buffer is full (drop new, not old)
-        // Existing targets are more urgent than new ones
+        // Don't update _lastDeadline so next command chains correctly
         if (_targets.isFull()) {
             continue;
         }
+        _lastDeadline = deadline;
 
         // Convert position to steps
         int32_t pos_steps = convertToSteps(cmd.position_pct);

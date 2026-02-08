@@ -114,15 +114,17 @@ private:
     FastAccelStepper* _servo;
 
     // Safety limits - these are the absolute constraints
-    int32_t _minStep;
-    int32_t _maxStep;
+    // volatile: written from main loop, read from tick task
+    volatile int32_t _minStep;
+    volatile int32_t _maxStep;
     uint32_t _maxStepPerSecond;
     uint32_t _maxStepAcceleration;
     float _stepsPerMillimeter;
 
     // Current stroke range for position conversion
-    int32_t _strokeMin;  // min position in steps (depth - stroke)
-    int32_t _strokeMax;  // max position in steps (depth)
+    // volatile: written from main loop, read from tick task
+    volatile int32_t _strokeMin;
+    volatile int32_t _strokeMax;
 
     // FreeRTOS queue for thread-safe command ingestion
     QueueHandle_t _commandQueue;

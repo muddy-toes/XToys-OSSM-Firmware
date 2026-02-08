@@ -44,6 +44,7 @@ void getStrokeLimits(int32_t* outMin, int32_t* outMax) {
     int32_t range = Motor.getMaxStep() - Motor.getMinStep();
     *outMax = Motor.getMinStep() + static_cast<int32_t>(currentDepthPercent / 100.0 * range);
     *outMin = *outMax - static_cast<int32_t>(currentStrokePercent / 100.0 * range);
+    if (*outMax > Motor.getMaxStep()) *outMax = Motor.getMaxStep();
     if (*outMin < Motor.getMinStep()) *outMin = Motor.getMinStep();
 }
 
@@ -134,8 +135,9 @@ void processCommand(DynamicJsonDocument doc) {
       streamingController.addTarget(position, time, replace);
 
     } else if (action.equals("startStreaming")) {
-      // Stop speed mode if active, switch to position streaming
+      // Stop both modes before starting streaming
       Motor.stopPattern();
+      streamingController.stop();
       if (Motor.getState() == MOTOR_READY) {
         streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
         int32_t strokeMin, strokeMax;
@@ -250,7 +252,8 @@ void processCommand(DynamicJsonDocument doc) {
     // Speed mode (oscillation pattern)
     } else if (action.equals("setPattern")) {
       // XToys sends setPattern when speed mode is selected
-      // Stop streaming if active, start pattern oscillation
+      // Stop both modes before starting pattern
+      Motor.stopPattern();
       streamingController.stop();
       if (Motor.getState() == MOTOR_READY) {
         int32_t strokeMin, strokeMax;
@@ -268,13 +271,6 @@ void processCommand(DynamicJsonDocument doc) {
 };
 
 void onToyMessage (String msg) {
-  StaticJsonDocument<512> localDoc;
-  if( deserializeJson(localDoc, msg) == DeserializationError::Ok ) {
-    processCommand(localDoc);
-  }
-};
-
-void onBLEToyMessage (String msg) {
   StaticJsonDocument<512> localDoc;
   if( deserializeJson(localDoc, msg) == DeserializationError::Ok ) {
     processCommand(localDoc);
@@ -328,7 +324,7 @@ void setup() {
     if (prefUseBluetooth) {
       displayManager.setBluetoothIcon(ICON_AVAILABLE);
       String bleName = preferences.getString("bleName", BLE_NAME);
-      BLEManager::setup(bleName, &onBLEToyMessage);
+      BLEManager::setup(bleName, &onToyMessage);
     }
   #endif
 

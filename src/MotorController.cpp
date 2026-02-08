@@ -379,6 +379,10 @@ void MotorController::_runEndstopHomingTask() {
 
         _state = MOTOR_READY;
 
+        // Restore normal speed settings
+        _servo->setSpeedInHz(_maxStepPerSec);
+        _servo->setAcceleration(_maxStepAccel);
+
         if (_homingCallback) {
             _homingCallback(true);
         }
@@ -392,10 +396,6 @@ void MotorController::_runEndstopHomingTask() {
             _homingCallback(false);
         }
     }
-
-    // Restore normal speed settings
-    _servo->setSpeedInHz(_maxStepPerSec);
-    _servo->setAcceleration(_maxStepAccel);
 }
 
 void MotorController::_runSensorlessHomingTask() {

@@ -55,7 +55,7 @@ private:
     FastAccelStepper* _servo = nullptr;
     static FastAccelStepperEngine _engine;
 
-    MotorState _state = MOTOR_DISABLED;
+    volatile MotorState _state = MOTOR_DISABLED;
 
     int32_t _minStep = 0;
     int32_t _maxStep = 0;
