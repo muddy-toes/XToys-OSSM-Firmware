@@ -13,7 +13,8 @@ StreamingController::StreamingController()
     , _lastDeadline(0)
     , _active(false)
     , _initialized(false)
-    , _currentDirection(0)
+    , _tickTask(nullptr)
+    , _taskDoneSemaphore(nullptr)
 {
 }
 
@@ -39,11 +40,18 @@ void StreamingController::begin(
     // Create FreeRTOS queue for thread-safe command ingestion
     _commandQueue = xQueueCreate(STREAMING_QUEUE_SIZE, sizeof(StreamingCommand));
 
-    _initialized = (_servo != nullptr && _commandQueue != nullptr);
+    // Semaphore for cooperative tick task shutdown
+    _taskDoneSemaphore = xSemaphoreCreateBinary();
 
-    if (!_initialized) {
-        Serial.println("StreamingController: Failed to initialize!");
-    }
+    _initialized = (_servo != nullptr && _commandQueue != nullptr && _taskDoneSemaphore != nullptr);
+}
+
+void StreamingController::updatePhysicalLimits(int32_t minStep, int32_t maxStep) {
+    _minStep = minStep;
+    _maxStep = maxStep;
+    // Also update stroke limits to match physical limits by default
+    _strokeMin = minStep;
+    _strokeMax = maxStep;
 }
 
 void StreamingController::setStrokeLimits(int32_t minStep, int32_t maxStep) {
@@ -64,6 +72,7 @@ void StreamingController::setStrokeLimits(int32_t minStep, int32_t maxStep) {
 // =============================================================================
 
 void StreamingController::safeMoveTo(int32_t pos) {
+    if (!_servo) return;  // Null check
     // CRITICAL: Constrain position to physical limits
     // This line is the final defense - nothing bypasses it
     pos = constrain(pos, _minStep, _maxStep);
@@ -115,27 +124,56 @@ void StreamingController::addTarget(uint8_t position_pct, uint32_t duration_ms, 
 void StreamingController::start() {
     if (!_initialized) return;
 
+    // Flush stale commands from before streaming started
+    if (_commandQueue) {
+        xQueueReset(_commandQueue);
+    }
+    _targets.clear();
+
     _active = true;
     _lastDeadline = 0;
-    _currentDirection = 0;
+
+    // Create dedicated tick task on Core 1 with priority 15
+    // (below homing at 20, above normal tasks)
+    if (_tickTask == nullptr) {
+        xTaskCreatePinnedToCore(
+            tickTaskWrapper,
+            "StreamTick",
+            4096,           // Stack size
+            this,           // Parameter
+            15,             // Priority
+            &_tickTask,
+            1               // Core 1
+        );
+    }
 }
 
 void StreamingController::stop() {
     if (!_initialized) return;
 
+    // Signal task to exit
     _active = false;
 
-    // Clear the command queue
-    xQueueReset(_commandQueue);
+    // Wait for task to finish (max 200ms -- tick is 10ms, this is generous)
+    if (_tickTask != nullptr) {
+        if (xSemaphoreTake(_taskDoneSemaphore, pdMS_TO_TICKS(200)) != pdTRUE) {
+            vTaskDelete(_tickTask);
+        }
+        _tickTask = nullptr;
+    }
 
-    // Clear internal buffer
+    // Safe to cleanup -- task is guaranteed stopped
+    if (_commandQueue) {
+        xQueueReset(_commandQueue);
+    }
     _targets.clear();
 
-    // IMMEDIATE stop - not controlled deceleration
-    _servo->forceStop();
+    // Controlled deceleration, not violent forceStop()
+    if (_servo) {
+        _servo->stopMove();
+    }
 
     _lastDeadline = 0;
-    _currentDirection = 0;
 }
 
 void StreamingController::tick() {
@@ -170,27 +208,13 @@ void StreamingController::tick() {
         computeCatchupProfile(currentPos, now, &targetPos, &speed, &accel);
     }
 
-    // 6. Handle direction reversal
-    // FastAccelStepper silently ignores moveTo commands that would reverse direction
-    // We need to issue stopMove() first and wait for it to slow down
-    if (needsReversal(currentPos, targetPos)) {
-        _servo->stopMove();  // Controlled deceleration
-        return;  // Will issue moveTo on next tick when speed is low enough
-    }
-
-    // 7. Issue commands through safety guards
+    // 6. Issue commands through safety guards
     // These guards are the last line of defense - they don't trust any of the
     // trajectory math above
+    // Note: FastAccelStepper handles direction reversal internally via RAMP_STATE_REVERSE
     safeSetSpeed(speed);
     safeSetAcceleration(accel);
     safeMoveTo(targetPos);
-
-    // Update direction tracking
-    if (targetPos > currentPos) {
-        _currentDirection = 1;
-    } else if (targetPos < currentPos) {
-        _currentDirection = -1;
-    }
 }
 
 // =============================================================================
@@ -220,10 +244,16 @@ void StreamingController::drainQueue() {
         }
         _lastDeadline = deadline;
 
+        // Skip this command if buffer is full (drop new, not old)
+        // Existing targets are more urgent than new ones
+        if (_targets.isFull()) {
+            continue;
+        }
+
         // Convert position to steps
         int32_t pos_steps = convertToSteps(cmd.position_pct);
 
-        // Add to internal buffer (drops oldest if full)
+        // Add to internal buffer
         StreamingTarget target;
         target.position = pos_steps;
         target.deadline_ms = deadline;
@@ -251,34 +281,6 @@ int32_t StreamingController::convertToSteps(uint8_t position_pct) {
     return constrain(pos, _minStep, _maxStep);
 }
 
-bool StreamingController::needsReversal(int32_t currentPos, int32_t targetPos) {
-    // Check if motor is currently moving
-    if (!_servo->isRunning()) {
-        return false;  // Not moving, no reversal issue
-    }
-
-    // Determine target direction
-    int8_t targetDirection = 0;
-    if (targetPos > currentPos) {
-        targetDirection = 1;
-    } else if (targetPos < currentPos) {
-        targetDirection = -1;
-    }
-
-    // If target is in opposite direction from current movement, we need to reverse
-    // But only if we're actually moving significantly
-    if (_currentDirection != 0 && targetDirection != 0 && _currentDirection != targetDirection) {
-        // Check current speed - if very slow, we can just change direction
-        int32_t currentSpeed = _servo->getCurrentSpeedInMilliHz(true);
-        if (abs(currentSpeed) < 1000) {  // Less than 1 step/sec
-            return false;  // Slow enough to just change direction
-        }
-        return true;  // Need to decelerate first
-    }
-
-    return false;
-}
-
 void StreamingController::computeOnTimeProfile(
     int32_t currentPos,
     const StreamingTarget& target,
@@ -304,9 +306,9 @@ void StreamingController::computeOnTimeProfile(
     uint32_t avgSpeed = (uint32_t)(absDistance / timeRemaining_s);
     uint32_t peakSpeed = (avgSpeed * 3) / 2;  // 1.5x average
 
-    // Acceleration to reach peak speed in half the time
-    // a = v / (t/2) = 2v/t
-    uint32_t accel = (uint32_t)((peakSpeed * 2) / timeRemaining_s);
+    // Acceleration for trapezoidal profile
+    // With 1.5x peak speed and symmetric accel/decel, need 3v/t
+    uint32_t accel = (uint32_t)((peakSpeed * 3) / timeRemaining_s);
 
     // Set outputs - safety guards will clamp these
     *outTargetPos = target.position;
@@ -371,4 +373,23 @@ void StreamingController::computeCatchupProfile(
         *outSpeed = (_maxStepPerSecond * 60) / 100;
         *outAccel = (_maxStepAcceleration * 60) / 100;
     }
+}
+
+// =============================================================================
+// Dedicated tick task
+// =============================================================================
+
+void StreamingController::tickTaskWrapper(void* params) {
+    StreamingController* self = static_cast<StreamingController*>(params);
+    self->_runTickTask();
+}
+
+void StreamingController::_runTickTask() {
+    while (_active) {
+        tick();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    // Signal stop() that we're done before self-deleting
+    xSemaphoreGive(_taskDoneSemaphore);
+    vTaskDelete(nullptr);
 }

@@ -5,6 +5,8 @@
 #include <CircularBuffer.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 
 // Buffer sizes
 #define STREAMING_QUEUE_SIZE 16      // FreeRTOS queue from other cores
@@ -38,7 +40,10 @@ public:
         float stepsPerMillimeter
     );
 
-    // Update limits (called when stroke/depth changes)
+    // Update physical limits (call after homing when actual travel is known)
+    void updatePhysicalLimits(int32_t minStep, int32_t maxStep);
+
+    // Update stroke limits (called when stroke/depth changes)
     void setStrokeLimits(int32_t minStep, int32_t maxStep);
 
     // Add a target - thread-safe, can be called from any core
@@ -82,9 +87,6 @@ private:
 
     // Convert position percentage to steps using current limits
     int32_t convertToSteps(uint8_t position_pct);
-
-    // Check if we need to reverse direction (and can't do it mid-motion)
-    bool needsReversal(int32_t currentPos, int32_t targetPos);
 
     // Compute motion profile when on schedule
     void computeOnTimeProfile(
@@ -132,9 +134,12 @@ private:
     uint32_t _lastDeadline;
 
     // State
-    bool _active;
+    volatile bool _active;
     bool _initialized;
 
-    // Track current movement direction for reversal detection
-    int8_t _currentDirection;  // -1, 0, or 1
+    // Dedicated tick task
+    TaskHandle_t _tickTask;
+    SemaphoreHandle_t _taskDoneSemaphore;
+    static void tickTaskWrapper(void* params);
+    void _runTickTask();
 };

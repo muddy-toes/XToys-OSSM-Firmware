@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <StrokeEngine.h>
+#include "MotorController.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
@@ -25,48 +25,56 @@ Preferences preferences;
 boolean prefUseWebsocket;
 boolean prefUseBluetooth;
 
-float currentSpeedPercentage = 0; // speed as a value from 0-100
 long rebootInMillis = 0; // if > 0, reboot in this many ms
+
+// Current stroke/depth as percentages (0-100), updated by setStroke/setDepth
+float currentStrokePercent = 100;  // stroke length (0=none, 100=full range back from depth)
+float currentDepthPercent = 100;   // max insertion position (0=retracted, 100=fully inserted)
+float currentSpeedPercent = 0;    // speed mode speed (0-100)
 
 //StaticJsonDocument<1024> doc;
 
-StrokeEngine Stroker;
+MotorController Motor;
 StreamingController streamingController;
 
-static motorProperties servoMotor {  
-  .maxSpeed = MAX_SPEED,                
-  .maxAcceleration = 100000,      
-  .stepsPerMillimeter = STEP_PER_MM,   
-  .invertDirection = true,      
-  .enableActiveLow = true,      
-  .stepPin = SERVO_PULSE,              
-  .directionPin = SERVO_DIR,          
-  .enablePin = SERVO_ENABLE              
-};
+// Compute stroke limits in steps from current stroke/depth percentages
+// depth = max insertion position (0-100%), stroke = length of movement back from depth (0-100%)
+// Example: depth=80%, stroke=50% -> moves between 30% and 80% of travel
+void getStrokeLimits(int32_t* outMin, int32_t* outMax) {
+    int32_t range = Motor.getMaxStep() - Motor.getMinStep();
+    *outMax = Motor.getMinStep() + static_cast<int32_t>(currentDepthPercent / 100.0 * range);
+    *outMin = *outMax - static_cast<int32_t>(currentStrokePercent / 100.0 * range);
+    if (*outMin < Motor.getMinStep()) *outMin = Motor.getMinStep();
+}
 
-static machineGeometry strokingMachine = {
-  .physicalTravel = PHYSICAL_TRAVEL,       
-  .keepoutBoundary = KEEPOUT_TRAVEL      
-};
-
-static endstopProperties endstop = {
-  .homeToBack = true,    
-  .activeLow = true,          
-  .endstopPin = SERVO_ENDSTOP,
-  .pinMode = INPUT_PULLUP
-};
-
-static sensorlessHomeProperties sensorlessHome = {
-  .currentPin = SERVO_SENSORLESS,
-  .currentLimit = 1.5  // matches official OSSM firmware
-};
+// Convert 0-100 speed percentage to strokes per minute, scaled by stroke length
+float speedPercentToSPM(float speedPercent) {
+    float spm = speedPercent * (SPEED_UPPER_LIMIT - SPEED_LOWER_LIMIT) / 100.0f + SPEED_LOWER_LIMIT;
+    // Scale speed up when stroke is shorter (less distance to cover)
+    int32_t strokeMin, strokeMax;
+    getStrokeLimits(&strokeMin, &strokeMax);
+    int32_t range = Motor.getMaxStep() - Motor.getMinStep();
+    int32_t strokeRange = strokeMax - strokeMin;
+    if (range > 0 && strokeRange > 0) {
+        float percentOfFullStroke = (float)strokeRange / range;
+        spm /= (percentOfFullStroke * 1.25f);
+    }
+    return spm;
+}
 
 static DisplayManager displayManager;
 
 void homingNotification(bool isHomed) {
   if (isHomed) {
-    Stroker.moveToMax(HOMING_SPEED, true);
-  } 
+    // Update StreamingController with new physical limits from homing
+    streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
+    int32_t strokeMin, strokeMax;
+    getStrokeLimits(&strokeMin, &strokeMax);
+    streamingController.setStrokeLimits(strokeMin, strokeMax);
+
+    // Move to max position after successful homing (matches main branch behavior)
+    Motor.moveToMax(HOMING_SPEED, true);
+  }
   DynamicJsonDocument doc(200);
   JsonArray root = doc.to<JsonArray>();
   JsonObject versionInfo = root.createNestedObject();
@@ -109,21 +117,13 @@ static void initEncoder() {
     encoder.disableAcceleration();
 }
 
-void updateSpeed () {
-  // convert from 0-100% to min-max in mm, taking into account current stroke length
-  float newSpeed = currentSpeedPercentage * (SPEED_UPPER_LIMIT - SPEED_LOWER_LIMIT) / 100 + SPEED_LOWER_LIMIT;
-  float percentOfStroke = Stroker.getStroke() / Stroker.getMaxDepth(); // scale speed faster if stroke is smaller
-  newSpeed /= (percentOfStroke * 1.25);
-  Stroker.setSpeed(newSpeed, true);
-}
-
-void processCommand(DynamicJsonDocument doc) {;
+void processCommand(DynamicJsonDocument doc) {
   //serializeJsonPretty(doc, Serial); Serial.println();
 
   JsonArray commands = doc.as<JsonArray>();
   for(JsonObject command : commands) {
     String action = command["action"];
-    
+
     if (action.equals("move")) {
       // position = 0-100
       // time = ms (duration to reach position)
@@ -134,44 +134,40 @@ void processCommand(DynamicJsonDocument doc) {;
       streamingController.addTarget(position, time, replace);
 
     } else if (action.equals("startStreaming")) {
-      // Initialize streaming controller with current limits from Stroker
-      // This must be called after homing so limits are valid
-      if (Stroker.getState() == READY || Stroker.getState() == PATTERN || Stroker.getState() == STREAMING) {
-        // XToys: stroke = min position, depth = max position
-        int32_t strokeMin = Stroker.getStrokeSteps();
-        int32_t strokeMax = Stroker.getDepthSteps();
+      // Stop speed mode if active, switch to position streaming
+      Motor.stopPattern();
+      if (Motor.getState() == MOTOR_READY) {
+        streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
+        int32_t strokeMin, strokeMax;
+        getStrokeLimits(&strokeMin, &strokeMax);
         streamingController.setStrokeLimits(strokeMin, strokeMax);
         streamingController.start();
       }
 
     // homing
     } else if (action.equals("home")) {
-      Stroker.disable();
+      streamingController.stop();
+      Motor.disable();
       String type = command["type"];
 
       if (type.equals("sensor")) {
+        // Endstop homing - direction based on which side
+        // Original logic: side="front" means homeToBack=true, else false
         String side = command["side"];
-        if (side == "front") {
-          endstop.homeToBack = true;
-        } else {
-          endstop.homeToBack = false;
-        }
-        Stroker.enableAndHome(&endstop, homingNotification, HOMING_SPEED);
+        bool homeToBack = side.equals("front");
+        Motor.homeEndstop(SERVO_ENDSTOP, true, homeToBack, HOMING_SPEED, homingNotification);
 
       } else if (type.equals("manual")) {
         float rodLength = command["length"];
-        Stroker.setPhysicalTravel(rodLength);
-        Stroker.thisIsHome(HOMING_SPEED);
+        Motor.homeManual(rodLength);
         homingNotification(true);
 
       } else if (type.equals("sensorless")) {
-        float rodLength = command["length"];
-        Stroker.setPhysicalTravel(rodLength);
-        Stroker.enableAndSensorlessHome(&sensorlessHome, homingNotification, SENSORLESS_HOMING_SPEED);
+        float maxTravel = command["length"] | 0.0f;  // 0 = no limit (backward compat)
+        Motor.homeSensorless(SERVO_SENSORLESS, 1.5, SENSORLESS_HOMING_SPEED, maxTravel, homingNotification);
       }
     
     } else if (action.equals("configureWebsocket")) {
-      Serial.print("Configuring Websocket");
       String ssid =  command["ssid"];
       String password = command["password"];
 
@@ -184,8 +180,6 @@ void processCommand(DynamicJsonDocument doc) {;
 
 
     } else if (action.equals("configureBluetooth")) {
-      Serial.print("Configuring Bluetooth");
-      
       String bleName =  command["name"];
 
       preferences.putString("bleName", bleName);
@@ -195,67 +189,37 @@ void processCommand(DynamicJsonDocument doc) {;
       rebootInMillis = millis() + 3000; // reboot in 3 seconds
 
     } else if (action.equals("stop")) {
-      // Stop both StreamingController and Stroker
       streamingController.stop();
-      Stroker.stopMotion();
-      
-    } else if (action.equals("setPattern")) {
-      int pattern = command["pattern"]; // XToys currently only sets pattern 0 (which it expects to be a basic steady in/out stroke)
-      Stroker.setPattern(pattern, true);
-      Stroker.startPattern();
+      Motor.stopPattern();
 
-    } else if (action.equals("setSpeed")) {
-      currentSpeedPercentage = command["speed"];
-      updateSpeed();
-    
     } else if (action.equals("setStroke")) {
-      float stroke = command["stroke"];
-      Stroker.setStroke(stroke / 100.0 * Stroker.getMaxDepth(), true);
-      updateSpeed();
-      // Update StreamingController limits (stroke = min position, depth = max position)
-      streamingController.setStrokeLimits(
-        Stroker.getStrokeSteps(),
-        Stroker.getDepthSteps()
-      );
+      currentStrokePercent = command["stroke"];
+      int32_t strokeMin, strokeMax;
+      getStrokeLimits(&strokeMin, &strokeMax);
+      streamingController.setStrokeLimits(strokeMin, strokeMax);
+      Motor.setPatternLimits(strokeMin, strokeMax);
+      // Update pattern speed since it's scaled by stroke length
+      Motor.setPatternSpeed(speedPercentToSPM(currentSpeedPercent));
 
     } else if (action.equals("setDepth")) {
-      float depth = command["depth"];
-      Stroker.setDepth(depth / 100.0 * Stroker.getMaxDepth(), true);
-      // Update StreamingController limits (stroke = min position, depth = max position)
-      streamingController.setStrokeLimits(
-        Stroker.getStrokeSteps(),
-        Stroker.getDepthSteps()
-      );
+      currentDepthPercent = command["depth"];
+      int32_t strokeMin, strokeMax;
+      getStrokeLimits(&strokeMin, &strokeMax);
+      streamingController.setStrokeLimits(strokeMin, strokeMax);
+      Motor.setPatternLimits(strokeMin, strokeMax);
+      Motor.setPatternSpeed(speedPercentToSPM(currentSpeedPercent));
 
     } else if (action.equals("setPhysicalTravel")) {
       float travel = command["travel"];
-      Stroker.setPhysicalTravel(travel);
-
-    // not currently sent by XToys
-    } else if (action.equals("setSensation")) {
-      float sensation = command["sensation"];
-      Stroker.setSensation(sensation, true);
-
-    // not currently sent by XToys
-    } else if (action.equals("setup")) {
-      float speed = command["speed"] != NULL ? command["speed"] : 10.0;
-      Stroker.setupDepth(speed, true);
-
-    // not currently sent by XToys
-    } else if (action.equals("retract")) {
-      float speed = command["speed"] != NULL ? command["speed"] : 10.0;
-      Stroker.moveToMin(speed);
-
-    // not currently sent by XToys
-    } else if (action.equals("extend")) {
-      float speed = command["speed"] != NULL ? command["speed"] : 10.0;
-      Stroker.moveToMax(speed);
+      Motor.setPhysicalTravel(travel);
 
     } else if (action.equals("connected")) {
-      Stroker.disable();
+      streamingController.stop();
+      Motor.disable();
 
     } else if (action.equals("disable")) {
-      Stroker.disable();
+      streamingController.stop();
+      Motor.disable();
 
     // print version JSON to any active connections
     } else if (action.equals("version")) {
@@ -273,10 +237,32 @@ void processCommand(DynamicJsonDocument doc) {;
           WebsocketManager::sendMessage(jsonString);
         }
       #endif
+      #if COMPILE_BLUETOOTH
+        if (prefUseBluetooth) {
+          BLEManager::sendNotification(jsonString);
+        }
+      #endif
       Serial.println(jsonString);
 
     } else if (action.equals("getPatternList")) {
       // not implemented
+
+    // Speed mode (oscillation pattern)
+    } else if (action.equals("setPattern")) {
+      // XToys sends setPattern when speed mode is selected
+      // Stop streaming if active, start pattern oscillation
+      streamingController.stop();
+      if (Motor.getState() == MOTOR_READY) {
+        int32_t strokeMin, strokeMax;
+        getStrokeLimits(&strokeMin, &strokeMax);
+        float spm = speedPercentToSPM(currentSpeedPercent);
+        Motor.startPattern(strokeMin, strokeMax, spm);
+      }
+
+    } else if (action.equals("setSpeed")) {
+      currentSpeedPercent = command["speed"];
+      float spm = speedPercentToSPM(currentSpeedPercent);
+      Motor.setPatternSpeed(spm);
     }
   }
 };
@@ -305,9 +291,6 @@ void setup() {
   prefUseWebsocket = preferences.getBool("useWebsocket", AUTO_START_BLUETOOTH_OR_WEBSOCKET);
   prefUseBluetooth = preferences.getBool("useBluetooth", AUTO_START_BLUETOOTH_OR_WEBSOCKET);
 
-  Serial.println("Websocket Enabled: " + String(prefUseWebsocket));
-  Serial.println("Bluetooth Enabled: " + String(prefUseBluetooth));
-
   displayManager.begin();
 
   #if COMPILE_WEBSOCKET
@@ -319,12 +302,10 @@ void setup() {
 
       // Connect to WiFi
       displayManager.showConnecting();
-      Serial.println("Setting up WiFi");
       WiFi.begin(ssid.c_str(), password.c_str());
       int wifiTimeout = 0;
       // Wait for up to 15 seconds for WiFi to connect
       while (WiFi.status() != WL_CONNECTED && wifiTimeout < 30) {
-          Serial.print(".");
           displayManager.showSpinner(wifiTimeout % 4);
           delay(500);
           wifiTimeout++;
@@ -333,12 +314,9 @@ void setup() {
       if (WiFi.status() == WL_CONNECTED) {
         displayManager.setWiFiIcon(ICON_CONNECTED);
         displayManager.showConnected(WiFi.localIP());
-        Serial.print("IP=");
-        Serial.println(WiFi.localIP());
         // Start websocket server
         WebsocketManager::setup(&onToyMessage);
       } else {
-        Serial.print("Unable to connect to WiFi, disabling Websocket");
         displayManager.showConnectFailed();
         delay(2000);
       }
@@ -351,8 +329,6 @@ void setup() {
       displayManager.setBluetoothIcon(ICON_AVAILABLE);
       String bleName = preferences.getString("bleName", BLE_NAME);
       BLEManager::setup(bleName, &onBLEToyMessage);
-      Serial.print("BLE=");
-      Serial.println(bleName);
     }
   #endif
 
@@ -369,37 +345,33 @@ void setup() {
   // Setup Encoder
   initEncoder();
 
-  // Setup Stroke Engine
-  Stroker.begin(&strokingMachine, &servoMotor);
+  // Setup Motor Controller
+  Motor.begin(SERVO_PULSE, SERVO_DIR, SERVO_ENABLE, STEP_PER_MM, true, true);
+  Motor.setMaxSpeed(MAX_SPEED);
+  Motor.setMaxAcceleration(100000);
 
-  // Setup StreamingController with safety limits from Stroker
+  // Setup StreamingController with safety limits from Motor
   // Note: Full initialization happens when startStreaming is called,
   // after homing establishes valid position limits
   streamingController.begin(
-    Stroker.getServo(),
-    Stroker.getMinStep(),
-    Stroker.getMaxStep(),
-    Stroker.getMaxStepPerSecond(),
-    Stroker.getMaxStepAcceleration(),
-    Stroker.getStepsPerMillimeter()
+    Motor.getServo(),
+    Motor.getMinStep(),
+    Motor.getMaxStep(),
+    Motor.getMaxStepPerSecond(),
+    Motor.getMaxStepAcceleration(),
+    Motor.getStepsPerMillimeter()
   );
-  Serial.println("StreamingController initialized");
 
 };
 
 void loop() {
   static uint64_t nextUpdate=0;
-  static uint64_t nextStreamingTick=0;
-  bool lastBLEconnected = false;
+  static bool lastBLEconnected = false;
 
-  // StreamingController tick - runs every 10ms when active
-  if (millis() >= nextStreamingTick) {
-    nextStreamingTick = millis() + 10;
-    streamingController.tick();
-  }
+  // Note: StreamingController tick() now runs in its own dedicated FreeRTOS task
+  // created by start() and deleted by stop()
 
   if (rebootInMillis > 0 && millis() > rebootInMillis) {
-    Serial.println("Rebooting...");
     ESP.restart();
   }
 
@@ -418,6 +390,8 @@ void loop() {
         if (lastBLEconnected) {
           displayManager.setBluetoothIcon(ICON_CONNECTED);
         } else {
+          streamingController.stop();
+          Motor.disable();
           displayManager.setBluetoothIcon(ICON_AVAILABLE);
         }
       }
@@ -446,7 +420,7 @@ void loop() {
     int encoderValue = encoder.readEncoder();
     used += snprintf(msg+used, sizeof(msg)-used, "\"analog\": %.0f,", analogValue);
     used += snprintf(msg+used, sizeof(msg)-used, "\"encoder\": %i,", encoderValue);
-    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i", Stroker.getDepthPercent());
+    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i", Motor.getDepthPercent());
     snprintf(msg+used, sizeof(msg)-used, "}");
     // send to serial
     Serial.println(msg);
