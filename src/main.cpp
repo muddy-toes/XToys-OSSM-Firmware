@@ -58,7 +58,7 @@ float speedPercentToSPM(float speedPercent) {
     int32_t strokeRange = strokeMax - strokeMin;
     if (range > 0 && strokeRange > 0) {
         float percentOfFullStroke = (float)strokeRange / range;
-        spm /= (percentOfFullStroke * 1.25f);
+        spm /= percentOfFullStroke;
     }
     return spm;
 }
@@ -118,7 +118,7 @@ static void initEncoder() {
     encoder.disableAcceleration();
 }
 
-void processCommand(DynamicJsonDocument doc) {
+void processCommand(JsonDocument& doc) {
   //serializeJsonPretty(doc, Serial); Serial.println();
 
   JsonArray commands = doc.as<JsonArray>();
@@ -225,14 +225,14 @@ void processCommand(DynamicJsonDocument doc) {
 
     // print version JSON to any active connections
     } else if (action.equals("version")) {
-      DynamicJsonDocument doc(200);
-      JsonArray root = doc.to<JsonArray>();
+      DynamicJsonDocument responseDoc(200);
+      JsonArray root = responseDoc.to<JsonArray>();
       JsonObject versionInfo = root.createNestedObject();
       versionInfo["action"] = "version";
       versionInfo["api"] = API_VERSION;
       versionInfo["firmware"] = FIRMWARE_VERSION;
       String jsonString;
-      serializeJson(doc, jsonString);
+      serializeJson(responseDoc, jsonString);
 
       #if COMPILE_WEBSOCKET
         if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
@@ -336,8 +336,7 @@ void setup() {
     Motor.getMinStep(),
     Motor.getMaxStep(),
     Motor.getMaxStepPerSecond(),
-    Motor.getMaxStepAcceleration(),
-    Motor.getStepsPerMillimeter()
+    Motor.getMaxStepAcceleration()
   );
 
 };
@@ -417,7 +416,8 @@ void loop() {
     int encoderValue = encoder.readEncoder();
     used += snprintf(msg+used, sizeof(msg)-used, "\"analog\": %.0f,", analogValue);
     used += snprintf(msg+used, sizeof(msg)-used, "\"encoder\": %i,", encoderValue);
-    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i", Motor.getDepthPercent());
+    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i,", Motor.getDepthPercent());
+    used += snprintf(msg+used, sizeof(msg)-used, "\"heap\": %u", (unsigned)ESP.getFreeHeap());
     snprintf(msg+used, sizeof(msg)-used, "}");
     // send to serial
     Serial.println(msg);

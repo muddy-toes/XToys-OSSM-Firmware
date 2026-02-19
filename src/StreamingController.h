@@ -2,21 +2,13 @@
 
 #include <Arduino.h>
 #include <FastAccelStepper.h>
-#include <CircularBuffer.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-// Buffer sizes
-#define STREAMING_QUEUE_SIZE 16      // FreeRTOS queue from other cores
-#define STREAMING_BUFFER_SIZE 16     // Internal circular buffer (~500ms at 30Hz)
-
-// Target structure for internal buffer (position already converted to steps)
-struct StreamingTarget {
-    int32_t position;       // position in steps
-    uint32_t deadline_ms;   // absolute millis() deadline
-};
+// Queue size for incoming commands from BLE/WebSocket/Serial
+#define STREAMING_QUEUE_SIZE 16
 
 // Incoming command structure (position as percentage, gets converted)
 struct StreamingCommand {
@@ -36,8 +28,7 @@ public:
         int32_t minStep,
         int32_t maxStep,
         uint32_t maxStepPerSecond,
-        uint32_t maxStepAcceleration,
-        float stepsPerMillimeter
+        uint32_t maxStepAcceleration
     );
 
     // Update physical limits (call after homing when actual travel is known)
@@ -58,12 +49,8 @@ public:
     // Stop immediately - clears queue and halts motor
     void stop();
 
-    // Main tick function - call from main loop every ~10ms
-    void tick();
-
     // Query state
     bool isActive() const { return _active; }
-    size_t queueDepth() const { return _targets.size(); }
 
 private:
     // =========================================================
@@ -79,33 +66,8 @@ private:
     // Internal helpers
     // =========================================================
 
-    // Drain FreeRTOS queue into internal buffer
-    void drainQueue();
-
-    // Remove targets whose deadlines have passed
-    void pruneExpired();
-
     // Convert position percentage to steps using current limits
     int32_t convertToSteps(uint8_t position_pct);
-
-    // Compute motion profile when on schedule
-    void computeOnTimeProfile(
-        int32_t currentPos,
-        const StreamingTarget& target,
-        uint32_t now,
-        int32_t* outTargetPos,
-        uint32_t* outSpeed,
-        uint32_t* outAccel
-    );
-
-    // Compute motion profile when behind schedule
-    void computeCatchupProfile(
-        int32_t currentPos,
-        uint32_t now,
-        int32_t* outTargetPos,
-        uint32_t* outSpeed,
-        uint32_t* outAccel
-    );
 
     // =========================================================
     // Member variables
@@ -114,32 +76,25 @@ private:
     FastAccelStepper* _servo;
 
     // Safety limits - these are the absolute constraints
-    // volatile: written from main loop, read from tick task
+    // volatile: written from main loop, read from task
     volatile int32_t _minStep;
     volatile int32_t _maxStep;
     uint32_t _maxStepPerSecond;
     uint32_t _maxStepAcceleration;
-    float _stepsPerMillimeter;
 
     // Current stroke range for position conversion
-    // volatile: written from main loop, read from tick task
+    // volatile: written from main loop, read from task
     volatile int32_t _strokeMin;
     volatile int32_t _strokeMax;
 
     // FreeRTOS queue for thread-safe command ingestion
     QueueHandle_t _commandQueue;
 
-    // Internal target buffer
-    CircularBuffer<StreamingTarget, STREAMING_BUFFER_SIZE> _targets;
-
-    // Deadline tracking for cumulative calculation
-    uint32_t _lastDeadline;
-
     // State
     volatile bool _active;
     bool _initialized;
 
-    // Dedicated tick task
+    // Dedicated processing task
     TaskHandle_t _tickTask;
     SemaphoreHandle_t _taskDoneSemaphore;
     static void tickTaskWrapper(void* params);
