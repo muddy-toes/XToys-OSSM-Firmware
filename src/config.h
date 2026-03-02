@@ -15,7 +15,7 @@
 
 // OSSM speed limits
 #define HOMING_SPEED              100   // mm/s for manual/endstop homing
-#define SENSORLESS_HOMING_SPEED   25    // mm/s for sensorless homing (must be slow for current detection)
+#define SENSORLESS_HOMING_SPEED   35    // mm/s for sensorless homing (XToys has a 20s timeout; 25mm/s exceeds it for travel > 250mm)
 #define SPEED_UPPER_LIMIT         180   // strokes per minute
 #define SPEED_LOWER_LIMIT     0.5 // strokes per minute
 

@@ -27,6 +27,11 @@ boolean prefUseBluetooth;
 
 long rebootInMillis = 0; // if > 0, reboot in this many ms
 
+// Pending homing notification - set by homing task callback, sent from main loop.
+// BLE notifications don't reliably deliver when sent from a FreeRTOS task context;
+// the main loop must send them.
+volatile int pendingHomingResult = 0;  // 0=none, 1=success, -1=failure
+
 // Current stroke/depth as percentages (0-100), updated by setStroke/setDepth
 float currentStrokePercent = 100;  // stroke length (0=none, 100=full range back from depth)
 float currentDepthPercent = 100;   // max insertion position (0=retracted, 100=fully inserted)
@@ -65,22 +70,12 @@ float speedPercentToSPM(float speedPercent) {
 
 static DisplayManager displayManager;
 
-void homingNotification(bool isHomed) {
-  if (isHomed) {
-    // Update StreamingController with new physical limits from homing
-    streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
-    int32_t strokeMin, strokeMax;
-    getStrokeLimits(&strokeMin, &strokeMax);
-    streamingController.setStrokeLimits(strokeMin, strokeMax);
-
-    // Move to max position after successful homing (matches main branch behavior)
-    Motor.moveToMax(HOMING_SPEED, true);
-  }
+void sendHomingResponse(bool isHomed) {
   DynamicJsonDocument doc(200);
   JsonArray root = doc.to<JsonArray>();
-  JsonObject versionInfo = root.createNestedObject();
-  versionInfo["action"] = "home";
-  versionInfo["success"] = isHomed;
+  JsonObject info = root.createNestedObject();
+  info["action"] = "home";
+  info["success"] = isHomed;
   String jsonString;
   serializeJson(doc, jsonString);
 
@@ -94,7 +89,27 @@ void homingNotification(bool isHomed) {
       BLEManager::sendNotification(jsonString);
     }
   #endif
-  //Serial.println(jsonString);
+}
+
+void homingNotification(bool isHomed) {
+  if (isHomed) {
+    // Update StreamingController with new physical limits from homing
+    streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
+    int32_t strokeMin, strokeMax;
+    getStrokeLimits(&strokeMin, &strokeMax);
+    streamingController.setStrokeLimits(strokeMin, strokeMax);
+  }
+
+  // Signal the main loop to send the BLE notification.
+  // BLE notifications must be sent from the main loop context - they don't
+  // reliably deliver when sent from a FreeRTOS homing task.
+  pendingHomingResult = isHomed ? 1 : -1;
+
+  if (isHomed) {
+    // Move to max position (this blocks but the main loop will send the
+    // BLE notification in parallel since it runs on a different task)
+    Motor.moveToMax(HOMING_SPEED, true);
+  }
 }
 
 // Encoder stuff
@@ -166,7 +181,7 @@ void processCommand(JsonDocument& doc) {
 
       } else if (type.equals("sensorless")) {
         float maxTravel = command["length"] | 0.0f;  // 0 = no limit (backward compat)
-        Motor.homeSensorless(SERVO_SENSORLESS, 1.5, SENSORLESS_HOMING_SPEED, maxTravel, homingNotification);
+        Motor.homeSensorless(SERVO_SENSORLESS, 1.0, SENSORLESS_HOMING_SPEED, maxTravel, homingNotification);
       }
     
     } else if (action.equals("configureWebsocket")) {
@@ -393,6 +408,12 @@ void loop() {
       }
     }
   #endif
+
+  // Send pending homing notification from main loop context
+  if (pendingHomingResult != 0) {
+    sendHomingResponse(pendingHomingResult > 0);
+    pendingHomingResult = 0;
+  }
 
   #if COMPILE_SERIAL
     SerialManager::loop();

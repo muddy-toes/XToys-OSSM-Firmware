@@ -50,7 +50,10 @@ void MotorController::disable() {
     stopPattern();
 
     if (_servo) {
-        _servo->forceStop();
+        // Use forceStopAndNewPosition instead of forceStop to avoid leaving
+        // force_immediate_stop flag set, which would prevent subsequent
+        // runForward()/runBackward() calls from generating any steps.
+        _servo->forceStopAndNewPosition(_servo->getCurrentPosition());
         _servo->disableOutputs();
     }
     _state = MOTOR_DISABLED;
@@ -206,7 +209,6 @@ void MotorController::homeEndstop(uint8_t endstopPin, bool activeLow, bool homeT
     );
 
     if (result != pdPASS) {
-        Serial.printf("ERROR: Failed to create endstop homing task (free heap: %d)\n", ESP.getFreeHeap());
         _state = MOTOR_DISABLED;
         if (callback) callback(false);
     }
@@ -269,7 +271,6 @@ void MotorController::homeSensorless(uint8_t currentPin, float threshold, float 
     );
 
     if (result != pdPASS) {
-        Serial.printf("ERROR: Failed to create sensorless homing task (free heap: %d)\n", ESP.getFreeHeap());
         _state = MOTOR_DISABLED;
         if (callback) callback(false);
     }
@@ -412,25 +413,27 @@ void MotorController::_runEndstopHomingTask() {
 
 void MotorController::_runSensorlessHomingTask() {
     const unsigned long timeout = 30000;  // 30 second timeout per phase
-    const float MIN_TRAVEL_MM = 10.0f;    // minimum travel before checking current
-    const int ADC_SAMPLES = 200;          // consistent sample count for all reads
-
-    Serial.printf("Sensorless homing: starting (free heap: %d)\n", ESP.getFreeHeap());
+    const int ADC_SAMPLES = 200;          // sample count for detection reads (matches old StrokeEngine)
+    const int ADC_BASELINE_SAMPLES = 1000; // more samples for stable baseline (matches old StrokeEngine)
 
     // Configure ADC pin (matching old StrokeEngine behavior)
     pinMode(_homingCurrentPin, INPUT);
 
-    // Set homing speed and acceleration BEFORE disable cycle (matching old StrokeEngine)
+    // Read baseline current BEFORE disable cycle (matches old StrokeEngine order)
+    // Use more samples for a stable baseline
+    float baselineCurrent = _getAnalogAveragePercent(_homingCurrentPin, ADC_BASELINE_SAMPLES);
+    float currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+
+    // Set homing speed and acceleration (matching old StrokeEngine)
     uint32_t homingSpeedHz = static_cast<uint32_t>(_homingSpeed * _stepsPerMm);
     _servo->setSpeedInHz(homingSpeedHz);
-    _servo->setAcceleration(_maxStepAccel / 10);  // Match old StrokeEngine (was /100, old code used /10)
+    _servo->setAcceleration(_maxStepAccel / 10);
 
     // Disable motor briefly in case we're against a hard stop
     _servo->disableOutputs();
     vTaskDelay(600 / portTICK_PERIOD_MS);
 
     if (_abortHoming) {
-        Serial.println("Sensorless homing: aborted during disable");
         _state = MOTOR_DISABLED;
         if (_homingCallback) _homingCallback(false);
         return;
@@ -440,17 +443,17 @@ void MotorController::_runSensorlessHomingTask() {
     _servo->enableOutputs();
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
-    // Read baseline current with same sample count as loop reads
-    float baselineCurrent = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES);
-    Serial.printf("Sensorless homing: baseline current = %.2f%%\n", baselineCurrent);
+    if (_abortHoming) {
+        _servo->disableOutputs();
+        _state = MOTOR_DISABLED;
+        if (_homingCallback) _homingCallback(false);
+        return;
+    }
 
     // === Phase 1: Run forward to find max position ===
     int8_t runResult = _servo->runForward();
-    Serial.printf("Sensorless homing: runForward() = %d, speed = %u Hz, accel = %u\n",
-                  runResult, homingSpeedHz, _maxStepAccel / 10);
 
     if (runResult != 0) {
-        Serial.printf("ERROR: runForward() failed with code %d\n", runResult);
         _servo->forceStop();
         _servo->disableOutputs();
         _state = MOTOR_DISABLED;
@@ -458,45 +461,30 @@ void MotorController::_runSensorlessHomingTask() {
         return;
     }
 
-    // Wait for motor to travel minimum distance before checking current
+    // Check current immediately - no min travel guard (matches old StrokeEngine).
+    // The old code started detection right after runForward(). Adding a blind spot
+    // caused the iHSV57 servo to alarm before the firmware could detect the stall.
     unsigned long startTime = millis();
-    int32_t minTravelSteps = static_cast<int32_t>(MIN_TRAVEL_MM * _stepsPerMm);
     int32_t phase1StartPos = _servo->getCurrentPosition();
 
-    while (abs(_servo->getCurrentPosition() - phase1StartPos) < minTravelSteps
-           && !_abortHoming && (millis() - startTime < timeout)) {
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-
-    Serial.printf("Sensorless homing: phase 1 min travel reached, pos = %d\n",
-                  (int)_servo->getCurrentPosition());
-
-    // Now check current until threshold exceeded
-    unsigned long lastLogTime = 0;
-    float currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+    currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
+        if (!_servo->isRunning()) {
+            break;  // Servo driver alarmed - treat as found-stop
+        }
+
         if (_homingMaxTravel > 0) {
             float distanceTraveled = abs(_servo->getCurrentPosition() - phase1StartPos) / _stepsPerMm;
             if (distanceTraveled > _homingMaxTravel) {
-                Serial.println("Sensorless homing: phase 1 max travel exceeded");
                 _abortHoming = true;
                 break;
             }
         }
         currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
-
-        // Log every 500ms
-        if (millis() - lastLogTime > 500) {
-            Serial.printf("Sensorless homing: phase 1 current=%.2f%% pos=%d\n",
-                          currentReading, (int)_servo->getCurrentPosition());
-            lastLogTime = millis();
-        }
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
     if (_abortHoming || (millis() - startTime >= timeout)) {
-        Serial.printf("Sensorless homing: phase 1 %s\n",
-                      _abortHoming ? "aborted" : "timeout");
         _servo->forceStop();
         _servo->disableOutputs();
         _state = MOTOR_DISABLED;
@@ -504,12 +492,12 @@ void MotorController::_runSensorlessHomingTask() {
         return;
     }
 
+    // Capture phase 1 travel distance before resetting position.
+    // We know this much space behind us is clear - phase 2 can fast-traverse it.
+    int32_t phase1TravelSteps = abs(_servo->getCurrentPosition() - phase1StartPos);
+
     // Found forward limit - this becomes position 0 (max)
     _servo->forceStopAndNewPosition(0);
-    Serial.println("Sensorless homing: phase 1 found max");
-
-    // Wait for current to settle
-    vTaskDelay(300 / portTICK_PERIOD_MS);
 
     if (_abortHoming) {
         _servo->disableOutputs();
@@ -519,11 +507,41 @@ void MotorController::_runSensorlessHomingTask() {
     }
 
     // === Phase 2: Run backward to find min position ===
+    // Optimization: we already traversed phase1TravelSteps of clear space in phase 1.
+    // Fast-traverse back through that known-safe zone, then slow down for detection.
+    const float FAST_TRAVERSE_MARGIN_MM = 10.0f;  // slow down this far before unknown territory
+    int32_t safeMarginSteps = static_cast<int32_t>(FAST_TRAVERSE_MARGIN_MM * _stepsPerMm);
+    int32_t safeFastSteps = phase1TravelSteps - safeMarginSteps;
+
+    if (safeFastSteps > 0) {
+        // Fast traverse through known-safe territory at normal homing speed (not sensorless speed)
+        uint32_t fastTraverseHz = static_cast<uint32_t>(100.0f * _stepsPerMm);  // 100mm/s
+        if (fastTraverseHz > _maxStepPerSec) fastTraverseHz = _maxStepPerSec;
+        _servo->setSpeedInHz(fastTraverseHz);
+        _servo->setAcceleration(_maxStepAccel / 2);
+        _servo->moveTo(-safeFastSteps);  // negative = backward from phase 1 wall
+
+        while (_servo->isRunning() && !_abortHoming) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+        }
+
+        if (_abortHoming) {
+            _servo->forceStop();
+            _servo->disableOutputs();
+            _state = MOTOR_DISABLED;
+            if (_homingCallback) _homingCallback(false);
+            return;
+        }
+
+        // Restore homing speed/accel for detection
+        _servo->setSpeedInHz(homingSpeedHz);
+        _servo->setAcceleration(_maxStepAccel / 10);
+    }
+
+    // Continue backward at slow detection speed
     runResult = _servo->runBackward();
-    Serial.printf("Sensorless homing: runBackward() = %d\n", runResult);
 
     if (runResult != 0) {
-        Serial.printf("ERROR: runBackward() failed with code %d\n", runResult);
         _servo->forceStop();
         _servo->disableOutputs();
         _state = MOTOR_DISABLED;
@@ -531,42 +549,40 @@ void MotorController::_runSensorlessHomingTask() {
         return;
     }
 
-    // Wait for motor to travel minimum distance before checking current
+    // Wait AFTER starting backward motion to let current sensor settle.
+    // This delay lets the motor travel ~10mm at 35mm/s, clearing any residual
+    // stall current from phase 1's hard stop (or from the fast traverse stop).
+    vTaskDelay(300 / portTICK_PERIOD_MS);
+
+    if (_abortHoming) {
+        _servo->forceStop();
+        _servo->disableOutputs();
+        _state = MOTOR_DISABLED;
+        if (_homingCallback) _homingCallback(false);
+        return;
+    }
+
     startTime = millis();
     int32_t phase2StartPos = _servo->getCurrentPosition();
 
-    while (abs(_servo->getCurrentPosition() - phase2StartPos) < minTravelSteps
-           && !_abortHoming && (millis() - startTime < timeout)) {
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-
-    Serial.printf("Sensorless homing: phase 2 min travel reached, pos = %d\n",
-                  (int)_servo->getCurrentPosition());
-
-    lastLogTime = 0;
     currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
+        if (!_servo->isRunning()) {
+            break;  // Servo driver alarmed - treat as found-stop
+        }
+
         if (_homingMaxTravel > 0) {
             float distanceTraveled = abs(_servo->getCurrentPosition() - phase2StartPos) / _stepsPerMm;
             if (distanceTraveled > _homingMaxTravel) {
-                Serial.println("Sensorless homing: phase 2 max travel exceeded");
                 _abortHoming = true;
                 break;
             }
         }
         currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
-
-        if (millis() - lastLogTime > 500) {
-            Serial.printf("Sensorless homing: phase 2 current=%.2f%% pos=%d\n",
-                          currentReading, (int)_servo->getCurrentPosition());
-            lastLogTime = millis();
-        }
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
     if (_abortHoming || (millis() - startTime >= timeout)) {
-        Serial.printf("Sensorless homing: phase 2 %s\n",
-                      _abortHoming ? "aborted" : "timeout");
         _servo->forceStop();
         _servo->disableOutputs();
         _state = MOTOR_DISABLED;
@@ -576,7 +592,6 @@ void MotorController::_runSensorlessHomingTask() {
 
     // Calculate measured travel from position (negative value = distance traveled backward)
     float measuredTravel = abs(_servo->getCurrentPosition()) / _stepsPerMm;
-    Serial.printf("Sensorless homing: measured travel = %.1f mm\n", measuredTravel);
 
     // Position 0 = fully retracted (back hard stop, where we are now)
     _servo->forceStopAndNewPosition(0);
@@ -590,7 +605,6 @@ void MotorController::_runSensorlessHomingTask() {
 
     // Validate step limits
     if (_minStep >= _maxStep) {
-        Serial.printf("Sensorless homing: invalid range (min=%d, max=%d)\n", (int)_minStep, (int)_maxStep);
         _servo->disableOutputs();
         _state = MOTOR_DISABLED;
         if (_homingCallback) _homingCallback(false);
@@ -615,9 +629,6 @@ void MotorController::_runSensorlessHomingTask() {
     // Restore normal speed settings
     _servo->setSpeedInHz(_maxStepPerSec);
     _servo->setAcceleration(_maxStepAccel);
-
-    Serial.printf("Sensorless homing: SUCCESS (travel=%.1fmm, min=%d, max=%d)\n",
-                  measuredTravel, (int)_minStep, (int)_maxStep);
 
     if (_homingCallback) {
         _homingCallback(true);

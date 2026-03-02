@@ -149,7 +149,6 @@ void StreamingController::stop() {
         } else {
             // Task didn't respond in time. Force-delete is risky (could hold a spinlock
             // that deadlocks subsequent FastAccelStepper calls), but we can't leak the task.
-            Serial.println("WARNING: StreamTick task did not exit cleanly, force deleting");
             vTaskDelete(_tickTask);
             _tickTask = nullptr;
             // Small delay to let any ISR referencing the deleted task settle
@@ -226,16 +225,6 @@ void StreamingController::_runTickTask() {
                 safeSetSpeed(speed);
                 safeSetAcceleration(accel);
                 safeMoveTo(targetPos);
-
-                // Log every 50th command for crash diagnostics
-                // Log every command when heap is low
-                uint32_t freeHeap = ESP.getFreeHeap();
-                if (cmdCount % 50 == 0 || freeHeap < 20000) {
-                    Serial.printf("[stream] #%u pos=%d->%d spd=%u acc=%u heap=%u q=%u\n",
-                                  cmdCount, (int)lastPos, (int)targetPos,
-                                  speed, accel, (unsigned)freeHeap,
-                                  (unsigned)uxQueueMessagesWaiting(_commandQueue));
-                }
             } else if (distance > 0) {
                 // time=0 means move immediately at max speed
                 safeSetSpeed(_maxStepPerSecond);

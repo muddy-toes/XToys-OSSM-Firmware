@@ -111,12 +111,7 @@ namespace WebsocketManager {
         // The path is ignored for the default node.
         secureServer.setDefaultNode(node404);
 
-        Serial.println("Starting server...");
         secureServer.start();
-        if (secureServer.isRunning()) {
-            Serial.print("Server ready. URL: wss://");
-            Serial.println(WiFi.localIP());
-        }
     }
 
     void loop() {
@@ -139,7 +134,6 @@ namespace WebsocketManager {
     // In the create function of the handler, we create a new Handler and keep track
     // of it using the activeClients array
     WebsocketHandler * MessageHandler::create() {
-        Serial.println("Creating new client!");
         MessageHandler * handler = new MessageHandler();
         for(int i = 0; i < MAX_CLIENTS; i++) {
             if (activeClients[i] == nullptr) {
