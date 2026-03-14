@@ -1,6 +1,8 @@
 #include "ModbusManager.h"
 
-// ---- CRC-16/MODBUS lookup table (from go-servoc) ----
+// CRC-16/MODBUS lookup table derived from go-servoc by Torsten Curdt
+// (https://github.com/tcurdt/go-servoc), licensed Apache 2.0.
+// The table values are the standard CRC-16/MODBUS polynomial 0xA001.
 static const uint16_t crcTable[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
     0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
