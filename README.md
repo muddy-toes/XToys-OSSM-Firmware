@@ -10,6 +10,34 @@ that I have changed the steps-per-revolution from 2000 to 800 to match the offic
 
 Review the differences before flashing this to your OSSM.
 
+## Modbus Servo Telemetry & Compliance (iHSV57)
+
+This fork adds Modbus RTU communication with the iHSV57 servo over the OSSM Reference Board's built-in RS232 transceiver (SP3232E on UART2). This provides real-time servo telemetry (speed, torque) and automatic compliance - the motor eases off when it detects external resistance.
+
+**Hardware required:** 3 jumper wires from the board's RS232 header to the servo's RS232 connector:
+
+| Board RS232 Header | Servo 5-pin RS232 |
+|---|---|
+| TX (pin 2) | RX (pin 2, brown/white wire) |
+| RX (pin 1) | TX (pin 4, blue/white wire) |
+| GND (pin 3) | GND (pin 3, blue wire) |
+
+Leave servo pins 1 (NC) and 5 (VCC) unconnected.
+
+**What it does:**
+- Reads servo speed and torque at ~17Hz via Modbus RTU (57600 baud, 8E1)
+- Configures the servo's internal gain switching so it automatically reduces push force when torque exceeds a threshold (e.g., when encountering resistance)
+- The servo handles the actual compliance switching at 2kHz internally; the ESP32 just sets the rules once after homing
+- All configuration persists in the servo's EEPROM; registers are read before writing to avoid unnecessary wear
+- Controlled by `COMPILE_MODBUS` in config.h (enabled by default)
+- If the RS232 cable isn't connected, the firmware runs normally without Modbus features
+
+**Tuning:** The compliance threshold and soft gain values in `ModbusManager.h` may need adjustment for your setup. Watch the serial monitor for `[MODBUS]` log lines showing torque readings during operation.
+
+**Note:** This is designed for the JMC iHSV57 servo with V6 firmware. V5 firmware uses different register addresses. See `docs/iHSV57/` for complete servo documentation.
+
+---
+
 Uses my fork of StrokeEngine.  Check it out into lib/StrokeEngine under your checkout of this repo.
 
 Thanks to @Harletta for adding limited support for the wired controller.  The display will now show the connected wifi IP along with connectivity icons.  The knobs will send info to XToys via JSON for scripting but do not directly control the OSSM.

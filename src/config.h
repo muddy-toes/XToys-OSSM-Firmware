@@ -23,6 +23,7 @@
 #define COMPILE_SERIAL        true
 #define COMPILE_BLUETOOTH     true
 #define COMPILE_WEBSOCKET     true
+#define COMPILE_MODBUS        true
 
 // Leave as true. If set to false the intent will be for XToys to enable one or the other modes as part of the firmware flash from the XToys website.
 #define AUTO_START_BLUETOOTH_OR_WEBSOCKET true

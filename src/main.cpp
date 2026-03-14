@@ -19,6 +19,9 @@
 #if COMPILE_SERIAL
   #include "SerialManager.h"
 #endif
+#if COMPILE_MODBUS
+  #include "ModbusManager.h"
+#endif
 
 // prefs configured during firmware flash from XToys website
 Preferences preferences;
@@ -310,6 +313,10 @@ void setup() {
     SerialManager::setup(&onToyMessage);
   #endif
 
+  #if COMPILE_MODBUS
+    ModbusManager::setup();
+  #endif
+
   // Setup Encoder
   initEncoder();
 
@@ -385,9 +392,22 @@ void loop() {
 
   // Send pending homing notification from main loop context
   if (pendingHomingResult != 0) {
-    sendHomingResponse(pendingHomingResult > 0);
+    bool homed = pendingHomingResult > 0;
+    sendHomingResponse(homed);
     pendingHomingResult = 0;
+
+    // Configure servo compliance via Modbus after successful homing
+    // (must run from main loop context, not from the homing FreeRTOS task)
+    #if COMPILE_MODBUS
+      if (homed) {
+        ModbusManager::initServo();
+      }
+    #endif
   }
+
+  #if COMPILE_MODBUS
+    ModbusManager::loop();
+  #endif
 
   #if COMPILE_SERIAL
     SerialManager::loop();
@@ -407,11 +427,21 @@ void loop() {
     float analogValue = getAnalogAveragePercent(speedPotPin, 10);
     int encoderValue = encoder.readEncoder();
 
-    StaticJsonDocument<200> telemetry;
+    StaticJsonDocument<300> telemetry;
     telemetry["analog"] = (int)analogValue;
     telemetry["encoder"] = encoderValue;
     telemetry["depth"] = Motor.getDepthPercent();
     telemetry["heap"] = ESP.getFreeHeap();
+
+    #if COMPILE_MODBUS
+      if (ModbusManager::isConnected()) {
+        const ServoTelemetry& servo = ModbusManager::getTelemetry();
+        if (servo.valid) {
+          telemetry["rpm"] = servo.speedFeedback;
+          telemetry["torque"] = servo.torqueFeedback;
+        }
+      }
+    #endif
 
     String telemetryJson;
     serializeJson(telemetry, telemetryJson);
