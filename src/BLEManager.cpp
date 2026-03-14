@@ -27,18 +27,18 @@ namespace BLEManager {
         xQueueSend(messageQueue, buffer, 0);  // Non-blocking, drop if full
       }
     }
-  };
+  }
 
   // Client connected to OSSM over BLE
   void ServerCallbacks::onConnect(BLEServer* pServer) {
     BLEManager::deviceConnected = true;
-  };
+  }
 
   void ServerCallbacks::onDisconnect(BLEServer* pServer) {
     BLEManager::deviceConnected = false;
     pServer->startAdvertising();
     // TODO: stop
-  };
+  }
 
   void sendNotification (String message) {
     if (!deviceConnected) return;
@@ -102,12 +102,12 @@ namespace BLEManager {
     NimBLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-    pAdvertising->setMinPreferred(0x12);
+    pAdvertising->setMinPreferred(0x06);  // min connection interval (7.5ms)
+    pAdvertising->setMaxPreferred(0x12); // max connection interval (22.5ms)
     NimBLEDevice::startAdvertising();
-  };
+  }
 
   bool isConnected() {
     return deviceConnected;
-  } 
-};
+  }
+}

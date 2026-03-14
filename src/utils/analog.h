@@ -3,11 +3,6 @@
 
 #include "Arduino.h"
 
-typedef struct {
-    int pinNumber;
-    int samples;
-} SampleOnPin;
-
 // public static function to get the analog value of a pin
 static float getAnalogAveragePercent(int pinNumber, int samples) {
     int sum = 0;

@@ -191,13 +191,9 @@ void StreamingController::tickTaskWrapper(void* params) {
 
 void StreamingController::_runTickTask() {
     StreamingCommand cmd;
-    int32_t lastPos = _servo ? _servo->getCurrentPosition() : 0;
-    uint32_t cmdCount = 0;
-
     while (_active) {
         // Block waiting for next command (10ms timeout to check _active flag)
         if (xQueueReceive(_commandQueue, &cmd, pdMS_TO_TICKS(10)) == pdTRUE) {
-            cmdCount++;
 
             // Handle replace flag - stop current move and drain queue
             if (cmd.replace) {
@@ -207,12 +203,19 @@ void StreamingController::_runTickTask() {
             }
 
             int32_t targetPos = convertToSteps(cmd.position_pct);
-            int32_t distance = abs(targetPos - lastPos);
+            int32_t currentPos = _servo->getCurrentPosition();
+            int32_t distance = abs(targetPos - currentPos);
 
             if (distance > 0 && cmd.duration_ms > 0) {
-                // Speed from StrokeEngine formula: peak speed for trapezoidal profile
+                // Average speed to cover distance in the allotted time.
+                // With the high fixed acceleration below, the velocity profile
+                // is nearly rectangular (instant accel), so average ~ peak.
+                // This makes each move take ~T + V/a seconds, slightly LONGER
+                // than allotted, so the motor is still in motion when the next
+                // command arrives and FastAccelStepper transitions seamlessly.
                 float time_s = constrain(cmd.duration_ms / 1000.0f, 0.02f, 120.0f);
-                uint32_t speed = (uint32_t)(1.5f * distance / time_s);
+                uint32_t speed = (uint32_t)(distance / time_s);
+                // MUDDY - this was here previously instead of above, removed to attempt smoother motion:  uint32_t speed = (uint32_t)(1.5f * distance / time_s);
 
                 // Always use high acceleration. The per-move formula (3*speed/time)
                 // assumes the motor starts from rest, but mid-streaming the motor is
@@ -231,8 +234,6 @@ void StreamingController::_runTickTask() {
                 safeSetAcceleration(_maxStepAcceleration);
                 safeMoveTo(targetPos);
             }
-
-            lastPos = targetPos;
         }
     }
 

@@ -1,5 +1,6 @@
 #include "MotorController.h"
 #include "config.h"
+#include "utils/analog.h"
 #include <Arduino.h>
 
 // Static member definition - single engine instance shared across all controllers
@@ -157,17 +158,16 @@ void MotorController::setMaxAcceleration(float mmPerSecSq) {
 }
 
 // ============================================================================
-// Helper methods
+// Common homing failure cleanup
 // ============================================================================
 
-float MotorController::_getAnalogAveragePercent(int pin, int samples) {
-    float sum = 0;
-    for (int i = 0; i < samples; i++) {
-        sum += analogRead(pin);
+void MotorController::_failHoming() {
+    if (_servo) {
+        _servo->forceStop();
+        _servo->disableOutputs();
     }
-    float average = sum / samples;
-    // ESP32 ADC is 12-bit (0-4095)
-    return 100.0f * average / 4096.0f;
+    _state = MOTOR_DISABLED;
+    if (_homingCallback) _homingCallback(false);
 }
 
 // ============================================================================
@@ -182,6 +182,13 @@ void MotorController::homeEndstop(uint8_t endstopPin, bool activeLow, bool homeT
     }
 
     if (_state == MOTOR_HOMING) {
+        if (callback) callback(false);
+        return;
+    }
+
+    // physicalTravel must be set before endstop homing (via setPhysicalTravel command)
+    // since endstop homing only finds one end, not both
+    if (_physicalTravel <= 0) {
         if (callback) callback(false);
         return;
     }
@@ -305,7 +312,7 @@ void MotorController::_runEndstopHomingTask() {
     // Set homing speed (convert mm/s to steps/s)
     uint32_t homingSpeedHz = static_cast<uint32_t>(_homingSpeed * _stepsPerMm);
     _servo->setSpeedInHz(homingSpeedHz);
-    _servo->setAcceleration(_maxStepAccel / 100);  // Gentle acceleration for homing (1000 mm/s²)
+    _servo->setAcceleration(_maxStepAccel / 100);  // Gentle acceleration for homing (1000 mm/s^2)
 
     // Configure endstop pin
     pinMode(_homingEndstopPin, INPUT_PULLUP);
@@ -322,21 +329,12 @@ void MotorController::_runEndstopHomingTask() {
         // Verify we're clear of endstop
         endstopActive = (digitalRead(_homingEndstopPin) == (_homingActiveLow ? LOW : HIGH));
         if (endstopActive && !_abortHoming) {
-            _servo->forceStop();
-            _servo->disableOutputs();
-            _state = MOTOR_DISABLED;
-            if (_homingCallback) _homingCallback(false);
+            _failHoming();
             return;
         }
     }
 
-    // Check for abort before continuing
-    if (_abortHoming) {
-        _servo->forceStop();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     // Run toward endstop (direction depends on homeToBack)
     if (_homingToBack) {
@@ -359,72 +357,53 @@ void MotorController::_runEndstopHomingTask() {
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    if (found && !_abortHoming) {
-        // Position 0 = fully retracted (back hard stop, where endstop triggered)
-        _servo->forceStopAndNewPosition(0);
-
-        // Same coordinate system as manual/sensorless: keepout at each end
-        int32_t keepoutSteps = static_cast<int32_t>(_keepout * _stepsPerMm);
-        int32_t totalSteps = static_cast<int32_t>(_physicalTravel * _stepsPerMm);
-        _minStep = keepoutSteps;               // 5mm from back hard stop
-        _maxStep = totalSteps - keepoutSteps;  // 5mm from front hard stop
-
-        // Validate step limits
-        if (_minStep >= _maxStep) {
-            _servo->disableOutputs();
-            _state = MOTOR_DISABLED;
-            if (_homingCallback) _homingCallback(false);
-            return;
-        }
-
-        // Move to minStep (safe boundary, away from endstop)
-        _servo->moveTo(_minStep);
-        while (_servo->isRunning() && !_abortHoming) {
-            vTaskDelay(20 / portTICK_PERIOD_MS);
-        }
-
-        if (_abortHoming) {
-            _servo->forceStop();
-            _state = MOTOR_DISABLED;
-            if (_homingCallback) _homingCallback(false);
-            return;
-        }
-
-        _state = MOTOR_READY;
-
-        // Restore normal speed settings
-        _servo->setSpeedInHz(_maxStepPerSec);
-        _servo->setAcceleration(_maxStepAccel);
-
-        if (_homingCallback) {
-            _homingCallback(true);
-        }
-    } else {
-        // Homing failed - disable motor
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-
-        if (_homingCallback) {
-            _homingCallback(false);
-        }
+    if (!found || _abortHoming) {
+        _failHoming();
+        return;
     }
+
+    // Position 0 = fully retracted (back hard stop, where endstop triggered)
+    _servo->forceStopAndNewPosition(0);
+
+    // Same coordinate system as manual/sensorless: keepout at each end
+    int32_t keepoutSteps = static_cast<int32_t>(_keepout * _stepsPerMm);
+    int32_t totalSteps = static_cast<int32_t>(_physicalTravel * _stepsPerMm);
+    _minStep = keepoutSteps;               // keepout from back hard stop
+    _maxStep = totalSteps - keepoutSteps;  // keepout from front hard stop
+
+    if (_minStep >= _maxStep) {
+        _failHoming();
+        return;
+    }
+
+    // Move to minStep (safe boundary, away from endstop)
+    _servo->moveTo(_minStep);
+    while (_servo->isRunning() && !_abortHoming) {
+        vTaskDelay(20 / portTICK_PERIOD_MS);
+    }
+
+    if (_abortHoming) { _failHoming(); return; }
+
+    _state = MOTOR_READY;
+    _servo->setSpeedInHz(_maxStepPerSec);
+    _servo->setAcceleration(_maxStepAccel);
+
+    if (_homingCallback) _homingCallback(true);
 }
 
 void MotorController::_runSensorlessHomingTask() {
     const unsigned long timeout = 30000;  // 30 second timeout per phase
-    const int ADC_SAMPLES = 200;          // sample count for detection reads (matches old StrokeEngine)
-    const int ADC_BASELINE_SAMPLES = 1000; // more samples for stable baseline (matches old StrokeEngine)
+    const int ADC_SAMPLES = 200;
+    const int ADC_BASELINE_SAMPLES = 1000;
 
-    // Configure ADC pin (matching old StrokeEngine behavior)
+    // Configure ADC pin
     pinMode(_homingCurrentPin, INPUT);
 
-    // Read baseline current BEFORE disable cycle (matches old StrokeEngine order)
-    // Use more samples for a stable baseline
-    float baselineCurrent = _getAnalogAveragePercent(_homingCurrentPin, ADC_BASELINE_SAMPLES);
-    float currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+    // Read baseline current BEFORE disable cycle
+    float baselineCurrent = getAnalogAveragePercent(_homingCurrentPin, ADC_BASELINE_SAMPLES);
+    float currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
 
-    // Set homing speed and acceleration (matching old StrokeEngine)
+    // Set homing speed and acceleration
     uint32_t homingSpeedHz = static_cast<uint32_t>(_homingSpeed * _stepsPerMm);
     _servo->setSpeedInHz(homingSpeedHz);
     _servo->setAcceleration(_maxStepAccel / 10);
@@ -433,41 +412,24 @@ void MotorController::_runSensorlessHomingTask() {
     _servo->disableOutputs();
     vTaskDelay(600 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) {
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     // Re-enable and wait for servo to stabilize
     _servo->enableOutputs();
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) {
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     // === Phase 1: Run forward to find max position ===
-    int8_t runResult = _servo->runForward();
+    if (_servo->runForward() != 0) { _failHoming(); return; }
 
-    if (runResult != 0) {
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
-
-    // Check current immediately - no min travel guard (matches old StrokeEngine).
-    // The old code started detection right after runForward(). Adding a blind spot
-    // caused the iHSV57 servo to alarm before the firmware could detect the stall.
+    // Check current immediately - no min travel guard.
+    // Adding a blind spot caused the iHSV57 servo to alarm before
+    // the firmware could detect the stall.
     unsigned long startTime = millis();
     int32_t phase1StartPos = _servo->getCurrentPosition();
 
-    currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+    currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
         if (!_servo->isRunning()) {
             break;  // Servo driver alarmed - treat as found-stop
@@ -480,17 +442,11 @@ void MotorController::_runSensorlessHomingTask() {
                 break;
             }
         }
-        currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+        currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming || (millis() - startTime >= timeout)) {
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming || (millis() - startTime >= timeout)) { _failHoming(); return; }
 
     // Capture phase 1 travel distance before resetting position.
     // We know this much space behind us is clear - phase 2 can fast-traverse it.
@@ -499,22 +455,16 @@ void MotorController::_runSensorlessHomingTask() {
     // Found forward limit - this becomes position 0 (max)
     _servo->forceStopAndNewPosition(0);
 
-    if (_abortHoming) {
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     // === Phase 2: Run backward to find min position ===
-    // Optimization: we already traversed phase1TravelSteps of clear space in phase 1.
-    // Fast-traverse back through that known-safe zone, then slow down for detection.
-    const float FAST_TRAVERSE_MARGIN_MM = 10.0f;  // slow down this far before unknown territory
+    // Optimization: fast-traverse back through known-safe zone from phase 1,
+    // then slow down for detection.
+    const float FAST_TRAVERSE_MARGIN_MM = 10.0f;
     int32_t safeMarginSteps = static_cast<int32_t>(FAST_TRAVERSE_MARGIN_MM * _stepsPerMm);
     int32_t safeFastSteps = phase1TravelSteps - safeMarginSteps;
 
     if (safeFastSteps > 0) {
-        // Fast traverse through known-safe territory at normal homing speed (not sensorless speed)
         uint32_t fastTraverseHz = static_cast<uint32_t>(100.0f * _stepsPerMm);  // 100mm/s
         if (fastTraverseHz > _maxStepPerSec) fastTraverseHz = _maxStepPerSec;
         _servo->setSpeedInHz(fastTraverseHz);
@@ -525,13 +475,7 @@ void MotorController::_runSensorlessHomingTask() {
             vTaskDelay(20 / portTICK_PERIOD_MS);
         }
 
-        if (_abortHoming) {
-            _servo->forceStop();
-            _servo->disableOutputs();
-            _state = MOTOR_DISABLED;
-            if (_homingCallback) _homingCallback(false);
-            return;
-        }
+        if (_abortHoming) { _failHoming(); return; }
 
         // Restore homing speed/accel for detection
         _servo->setSpeedInHz(homingSpeedHz);
@@ -539,33 +483,19 @@ void MotorController::_runSensorlessHomingTask() {
     }
 
     // Continue backward at slow detection speed
-    runResult = _servo->runBackward();
-
-    if (runResult != 0) {
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_servo->runBackward() != 0) { _failHoming(); return; }
 
     // Wait AFTER starting backward motion to let current sensor settle.
     // This delay lets the motor travel ~10mm at 35mm/s, clearing any residual
     // stall current from phase 1's hard stop (or from the fast traverse stop).
     vTaskDelay(300 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) {
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     startTime = millis();
     int32_t phase2StartPos = _servo->getCurrentPosition();
 
-    currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+    currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
         if (!_servo->isRunning()) {
             break;  // Servo driver alarmed - treat as found-stop
@@ -578,19 +508,13 @@ void MotorController::_runSensorlessHomingTask() {
                 break;
             }
         }
-        currentReading = _getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
+        currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming || (millis() - startTime >= timeout)) {
-        _servo->forceStop();
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming || (millis() - startTime >= timeout)) { _failHoming(); return; }
 
-    // Calculate measured travel from position (negative value = distance traveled backward)
+    // Calculate measured travel from position (negative = distance traveled backward)
     float measuredTravel = abs(_servo->getCurrentPosition()) / _stepsPerMm;
 
     // Position 0 = fully retracted (back hard stop, where we are now)
@@ -600,16 +524,10 @@ void MotorController::_runSensorlessHomingTask() {
     _physicalTravel = measuredTravel;
     int32_t keepoutSteps = static_cast<int32_t>(_keepout * _stepsPerMm);
     int32_t totalSteps = static_cast<int32_t>(_physicalTravel * _stepsPerMm);
-    _minStep = keepoutSteps;               // 5mm from back hard stop
-    _maxStep = totalSteps - keepoutSteps;  // 5mm from front hard stop
+    _minStep = keepoutSteps;               // keepout from back hard stop
+    _maxStep = totalSteps - keepoutSteps;  // keepout from front hard stop
 
-    // Validate step limits
-    if (_minStep >= _maxStep) {
-        _servo->disableOutputs();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_minStep >= _maxStep) { _failHoming(); return; }
 
     // Move to minStep (safe boundary, away from back hard stop)
     _servo->moveTo(_minStep);
@@ -617,22 +535,13 @@ void MotorController::_runSensorlessHomingTask() {
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming) {
-        _servo->forceStop();
-        _state = MOTOR_DISABLED;
-        if (_homingCallback) _homingCallback(false);
-        return;
-    }
+    if (_abortHoming) { _failHoming(); return; }
 
     _state = MOTOR_READY;
-
-    // Restore normal speed settings
     _servo->setSpeedInHz(_maxStepPerSec);
     _servo->setAcceleration(_maxStepAccel);
 
-    if (_homingCallback) {
-        _homingCallback(true);
-    }
+    if (_homingCallback) _homingCallback(true);
 }
 
 // ============================================================================

@@ -4,6 +4,7 @@
 #include <FastAccelStepper.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "config.h"
 
 enum MotorState {
     MOTOR_DISABLED,
@@ -62,7 +63,7 @@ private:
     uint32_t _maxStepPerSec = 0;
     uint32_t _maxStepAccel = 0;
     float _stepsPerMm = 0;
-    float _keepout = 5.0;       // mm, from KEEPOUT_TRAVEL
+    float _keepout = KEEPOUT_TRAVEL;
     float _physicalTravel = 0;
 
     // Homing task management
@@ -91,8 +92,8 @@ private:
     float _homingThreshold = 0;
     float _homingMaxTravel = 0;
 
-    // Helper for ADC averaging (returns percentage 0-100)
-    float _getAnalogAveragePercent(int pin, int samples);
+    // Common abort/failure cleanup for homing tasks
+    void _failHoming();
 
     // Internal homing task implementations
     void _runEndstopHomingTask();

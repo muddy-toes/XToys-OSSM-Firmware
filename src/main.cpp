@@ -22,10 +22,10 @@
 
 // prefs configured during firmware flash from XToys website
 Preferences preferences;
-boolean prefUseWebsocket;
-boolean prefUseBluetooth;
+bool prefUseWebsocket;
+bool prefUseBluetooth;
 
-long rebootInMillis = 0; // if > 0, reboot in this many ms
+unsigned long rebootInMillis = 0; // if > 0, reboot in this many ms
 
 // Pending homing notification - set by homing task callback, sent from main loop.
 // BLE notifications don't reliably deliver when sent from a FreeRTOS task context;
@@ -36,8 +36,6 @@ volatile int pendingHomingResult = 0;  // 0=none, 1=success, -1=failure
 float currentStrokePercent = 100;  // stroke length (0=none, 100=full range back from depth)
 float currentDepthPercent = 100;   // max insertion position (0=retracted, 100=fully inserted)
 float currentSpeedPercent = 0;    // speed mode speed (0-100)
-
-//StaticJsonDocument<1024> doc;
 
 MotorController Motor;
 StreamingController streamingController;
@@ -51,6 +49,14 @@ void getStrokeLimits(int32_t* outMin, int32_t* outMax) {
     *outMin = *outMax - static_cast<int32_t>(currentStrokePercent / 100.0 * range);
     if (*outMax > Motor.getMaxStep()) *outMax = Motor.getMaxStep();
     if (*outMin < Motor.getMinStep()) *outMin = Motor.getMinStep();
+}
+
+// Recompute and apply stroke limits to both streaming and pattern controllers
+void applyStrokeLimits() {
+    int32_t strokeMin, strokeMax;
+    getStrokeLimits(&strokeMin, &strokeMax);
+    streamingController.setStrokeLimits(strokeMin, strokeMax);
+    Motor.setPatternLimits(strokeMin, strokeMax);
 }
 
 // Convert 0-100 speed percentage to strokes per minute, scaled by stroke length
@@ -70,15 +76,8 @@ float speedPercentToSPM(float speedPercent) {
 
 static DisplayManager displayManager;
 
-void sendHomingResponse(bool isHomed) {
-  DynamicJsonDocument doc(200);
-  JsonArray root = doc.to<JsonArray>();
-  JsonObject info = root.createNestedObject();
-  info["action"] = "home";
-  info["success"] = isHomed;
-  String jsonString;
-  serializeJson(doc, jsonString);
-
+// Send a JSON string to all active communication channels
+void sendToClients(const String& jsonString) {
   #if COMPILE_WEBSOCKET
     if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
       WebsocketManager::sendMessage(jsonString);
@@ -91,13 +90,22 @@ void sendHomingResponse(bool isHomed) {
   #endif
 }
 
+void sendHomingResponse(bool isHomed) {
+  DynamicJsonDocument doc(200);
+  JsonArray root = doc.to<JsonArray>();
+  JsonObject info = root.createNestedObject();
+  info["action"] = "home";
+  info["success"] = isHomed;
+  String jsonString;
+  serializeJson(doc, jsonString);
+  sendToClients(jsonString);
+}
+
 void homingNotification(bool isHomed) {
   if (isHomed) {
     // Update StreamingController with new physical limits from homing
     streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
-    int32_t strokeMin, strokeMax;
-    getStrokeLimits(&strokeMin, &strokeMax);
-    streamingController.setStrokeLimits(strokeMin, strokeMax);
+    applyStrokeLimits();
   }
 
   // Signal the main loop to send the BLE notification.
@@ -134,8 +142,6 @@ static void initEncoder() {
 }
 
 void processCommand(JsonDocument& doc) {
-  //serializeJsonPretty(doc, Serial); Serial.println();
-
   JsonArray commands = doc.as<JsonArray>();
   for(JsonObject command : commands) {
     String action = command["action"];
@@ -145,8 +151,7 @@ void processCommand(JsonDocument& doc) {
       // time = ms (duration to reach position)
       int position = command["position"];
       int time = command["time"];
-      boolean replace = (command["replace"] == true);
-      // Use new look-ahead StreamingController instead of StrokeEngine
+      bool replace = (command["replace"] == true);
       streamingController.addTarget(position, time, replace);
 
     } else if (action.equals("startStreaming")) {
@@ -155,9 +160,7 @@ void processCommand(JsonDocument& doc) {
       streamingController.stop();
       if (Motor.getState() == MOTOR_READY) {
         streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
-        int32_t strokeMin, strokeMax;
-        getStrokeLimits(&strokeMin, &strokeMax);
-        streamingController.setStrokeLimits(strokeMin, strokeMax);
+        applyStrokeLimits();
         streamingController.start();
       }
 
@@ -183,7 +186,7 @@ void processCommand(JsonDocument& doc) {
         float maxTravel = command["length"] | 0.0f;  // 0 = no limit (backward compat)
         Motor.homeSensorless(SERVO_SENSORLESS, 1.0, SENSORLESS_HOMING_SPEED, maxTravel, homingNotification);
       }
-    
+
     } else if (action.equals("configureWebsocket")) {
       String ssid =  command["ssid"];
       String password = command["password"];
@@ -194,7 +197,6 @@ void processCommand(JsonDocument& doc) {
       preferences.end();
 
       rebootInMillis = millis() + 3000; // reboot in 3 seconds
-
 
     } else if (action.equals("configureBluetooth")) {
       String bleName =  command["name"];
@@ -211,19 +213,13 @@ void processCommand(JsonDocument& doc) {
 
     } else if (action.equals("setStroke")) {
       currentStrokePercent = command["stroke"];
-      int32_t strokeMin, strokeMax;
-      getStrokeLimits(&strokeMin, &strokeMax);
-      streamingController.setStrokeLimits(strokeMin, strokeMax);
-      Motor.setPatternLimits(strokeMin, strokeMax);
+      applyStrokeLimits();
       // Update pattern speed since it's scaled by stroke length
       Motor.setPatternSpeed(speedPercentToSPM(currentSpeedPercent));
 
     } else if (action.equals("setDepth")) {
       currentDepthPercent = command["depth"];
-      int32_t strokeMin, strokeMax;
-      getStrokeLimits(&strokeMin, &strokeMax);
-      streamingController.setStrokeLimits(strokeMin, strokeMax);
-      Motor.setPatternLimits(strokeMin, strokeMax);
+      applyStrokeLimits();
       Motor.setPatternSpeed(speedPercentToSPM(currentSpeedPercent));
 
     } else if (action.equals("setPhysicalTravel")) {
@@ -238,7 +234,6 @@ void processCommand(JsonDocument& doc) {
       streamingController.stop();
       Motor.disable();
 
-    // print version JSON to any active connections
     } else if (action.equals("version")) {
       DynamicJsonDocument responseDoc(200);
       JsonArray root = responseDoc.to<JsonArray>();
@@ -248,21 +243,8 @@ void processCommand(JsonDocument& doc) {
       versionInfo["firmware"] = FIRMWARE_VERSION;
       String jsonString;
       serializeJson(responseDoc, jsonString);
-
-      #if COMPILE_WEBSOCKET
-        if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
-          WebsocketManager::sendMessage(jsonString);
-        }
-      #endif
-      #if COMPILE_BLUETOOTH
-        if (prefUseBluetooth) {
-          BLEManager::sendNotification(jsonString);
-        }
-      #endif
+      sendToClients(jsonString);
       Serial.println(jsonString);
-
-    } else if (action.equals("getPatternList")) {
-      // not implemented
 
     // Speed mode (oscillation pattern)
     } else if (action.equals("setPattern")) {
@@ -283,16 +265,14 @@ void processCommand(JsonDocument& doc) {
       Motor.setPatternSpeed(spm);
     }
   }
-};
+}
 
-void onToyMessage (String msg) {
+void onToyMessage(String msg) {
   StaticJsonDocument<512> localDoc;
-  if( deserializeJson(localDoc, msg) == DeserializationError::Ok ) {
+  if (deserializeJson(localDoc, msg) == DeserializationError::Ok) {
     processCommand(localDoc);
   }
-};
-
-
+}
 
 void setup() {
   Serial.begin(115200);
@@ -312,7 +292,7 @@ void setup() {
         displayManager.setWiFiIcon(ICON_AVAILABLE);
         displayManager.showConnecting();
         WiFi.begin(ssid.c_str(), password.c_str());
-        // Connection check continues in loop() — no blocking here
+        // Connection check continues in loop() - no blocking here
       }
     }
   #endif
@@ -329,11 +309,6 @@ void setup() {
     displayManager.setSerialIcon(ICON_AVAILABLE);
     SerialManager::setup(&onToyMessage);
   #endif
-
-  // Set PWM output with 8bit resolution and 5kHz
-  ledcSetup(0, 5000, 8);
-  ledcAttachPin(PWM, 0);
-  ledcWrite(0, 0);
 
   // Setup Encoder
   initEncoder();
@@ -353,11 +328,10 @@ void setup() {
     Motor.getMaxStepPerSecond(),
     Motor.getMaxStepAcceleration()
   );
-
-};
+}
 
 void loop() {
-  static uint64_t nextUpdate=0;
+  static uint64_t nextUpdate = 0;
   static bool lastBLEconnected = false;
 
   // Note: StreamingController tick() now runs in its own dedicated FreeRTOS task
@@ -426,30 +400,32 @@ void loop() {
     }
   #endif
 
-   // Output remote and depth values to serial
+  // Output telemetry to serial and websocket
   if (nextUpdate < millis()) {
-    char msg[200];
-    int used=1;
     nextUpdate = millis() + 200;
-    //Serial.printf("Free heap: %i\n", ESP.getFreeHeap());
-    msg[0] = '{';
+
     float analogValue = getAnalogAveragePercent(speedPotPin, 10);
     int encoderValue = encoder.readEncoder();
-    used += snprintf(msg+used, sizeof(msg)-used, "\"analog\": %.0f,", analogValue);
-    used += snprintf(msg+used, sizeof(msg)-used, "\"encoder\": %i,", encoderValue);
-    used += snprintf(msg+used, sizeof(msg)-used, "\"depth\": %i,", Motor.getDepthPercent());
-    used += snprintf(msg+used, sizeof(msg)-used, "\"heap\": %u", (unsigned)ESP.getFreeHeap());
-    snprintf(msg+used, sizeof(msg)-used, "}");
-    // send to serial
-    Serial.println(msg);
-    if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
-      if (WiFi.status() == WL_CONNECTED) {
-        // Send to websocket if connected
-        WebsocketManager::sendMessage(msg);
+
+    StaticJsonDocument<200> telemetry;
+    telemetry["analog"] = (int)analogValue;
+    telemetry["encoder"] = encoderValue;
+    telemetry["depth"] = Motor.getDepthPercent();
+    telemetry["heap"] = ESP.getFreeHeap();
+
+    String telemetryJson;
+    serializeJson(telemetry, telemetryJson);
+    Serial.println(telemetryJson);
+
+    #if COMPILE_WEBSOCKET
+      if (prefUseWebsocket || AUTO_START_BLUETOOTH_OR_WEBSOCKET) {
+        if (WiFi.status() == WL_CONNECTED) {
+          WebsocketManager::sendMessage(telemetryJson);
         }
-    }
+      }
+    #endif
 
     // Show running screen on display
     displayManager.showRunning();
   }
-};
+}

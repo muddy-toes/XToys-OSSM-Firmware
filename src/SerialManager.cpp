@@ -78,4 +78,4 @@ namespace SerialManager {
         if (lastActivityTime == 0) return false;
         return (millis() - lastActivityTime) < SERIAL_ACTIVITY_TIMEOUT_MS;
     }
-};
+}

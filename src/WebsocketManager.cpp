@@ -153,8 +153,6 @@ namespace WebsocketManager {
         }
     }
 
-    // Finally, passing messages around. If we receive something, we send it to all
-    // other clients
     void MessageHandler::onMessage(WebsocketInputStreambuf * inbuf) {
         // Get the input message
         std::ostringstream ss;
@@ -164,7 +162,6 @@ namespace WebsocketManager {
         msgReceivedCallback(msg.c_str());
     }
 
-    // The following HTML code will present the chat interface.
     void handleRoot(HTTPRequest * req, HTTPResponse * res) {
         res->setHeader("Content-Type", "text/plain");
         res->print("SSL cert accepted. You can now close this tab.");
