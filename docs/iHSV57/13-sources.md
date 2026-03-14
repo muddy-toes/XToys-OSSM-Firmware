@@ -12,13 +12,6 @@
 | iHSV57-30-14-36-RC CANopen | https://www.jmc-motor.com/product/99.html |
 | Official User Manual (iHSV42/57/60) | https://www.jmc-motor.com/uploads/20240730/1cf02d411ba42d6a61bb4df55b64b835.pdf |
 
-## PDF Manuals (Local Copies)
-
-| File | Location |
-|------|----------|
-| V1 Manual | `docs/iHSV57-repos/JMC-Servo-Configuration/V1 JMC iHSV57-30 User Manual.pdf` |
-| V2 Manual (V6 firmware) | `docs/iHSV57-repos/JMC-Servo-Configuration/V2 ihsv_v6_2020_manual.pdf` |
-
 ## PDF Manuals (Online)
 
 | Source | URL |
