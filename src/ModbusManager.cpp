@@ -296,13 +296,12 @@ void loop() {
 }
 
 bool initServo() {
-    Serial.println("[MODBUS] Initializing servo compliance...");
+    Serial.println("[MODBUS] Connecting to servo...");
 
-    // First, verify we can talk to the servo by reading any register
+    // Verify we can talk to the servo by reading a telemetry register
     uint16_t testVal;
     bool canTalk = false;
 
-    // Try reading speed feedback register (should work on any firmware version)
     for (int attempt = 0; attempt < 3; attempt++) {
         if (readRegister(REG_MON_SPEED_FB, &testVal)) {
             canTalk = true;
@@ -313,7 +312,7 @@ bool initServo() {
     }
 
     if (!canTalk) {
-        Serial.println("[MODBUS] Could not connect to servo. Compliance disabled.");
+        Serial.println("[MODBUS] Could not connect to servo. Telemetry disabled.");
         Serial.println("[MODBUS] Check wiring: Board TX -> Servo RX, Board RX -> Servo TX, GND -> GND");
         _connected = false;
         _configured = false;
@@ -321,61 +320,17 @@ bool initServo() {
     }
 
     _connected = true;
-    Serial.printf("[MODBUS] Servo responding (speed_fb register returned %d)\n", (int16_t)testVal);
+    Serial.printf("[MODBUS] Servo responding (speed_fb = %d)\n", (int16_t)testVal);
 
-    // Configure gain switching for automatic compliance.
-    // Each register is read first; if it already holds the desired value, the
-    // write is skipped to avoid unnecessary EEPROM wear. On a fresh servo this
-    // writes ~10 registers. On subsequent boots with persisted values, it writes zero.
-    bool allOk = true;
-    Serial.println("[MODBUS] Checking compliance config (read-before-write to avoid EEPROM wear)...");
+    // Ensure gain switching is disabled. Previous firmware versions experimented
+    // with gain switching for compliance but it proved ineffective on the iHSV57
+    // in position mode. See docs/iHSV57/SESSION-2026-03-14-modbus-implementation.md
+    ensureRegister(REG_GAIN_SWITCH_MODE, COMPLIANCE_SWITCH_MODE, "P02-30 gain_switch_mode");
 
-    // Gain set 1 (firm) - don't overwrite if the servo already has reasonable values.
-    // The user may have auto-tuned these via JMC software - we don't want to clobber that.
-    // We only write our defaults if the current value is zero (unconfigured).
-    uint16_t currentPosGain1 = 0, currentSpdGain1 = 0, currentSpdInt1 = 0;
-    readRegister(REG_POS_GAIN_1, &currentPosGain1);
-    readRegister(REG_SPD_GAIN_1, &currentSpdGain1);
-    readRegister(REG_SPD_INTEGRAL_1, &currentSpdInt1);
+    _configured = true;
+    Serial.println("[MODBUS] Telemetry active (speed, torque at ~17Hz)");
 
-    if (currentPosGain1 > 0) {
-        Serial.printf("[MODBUS] Keeping existing firm pos gain: %.1f 1/S\n", currentPosGain1 / 10.0f);
-    } else {
-        allOk &= ensureRegister(REG_POS_GAIN_1, FIRM_POS_GAIN, "P02-00 pos_gain_1 (firm)");
-    }
-    if (currentSpdGain1 > 0) {
-        Serial.printf("[MODBUS] Keeping existing firm spd gain: %.1f Hz\n", currentSpdGain1 / 10.0f);
-    } else {
-        allOk &= ensureRegister(REG_SPD_GAIN_1, FIRM_SPD_GAIN, "P02-10 spd_gain_1 (firm)");
-    }
-    if (currentSpdInt1 > 0) {
-        Serial.printf("[MODBUS] Keeping existing firm spd integral: %.1f ms\n", currentSpdInt1 / 10.0f);
-    } else {
-        allOk &= ensureRegister(REG_SPD_INTEGRAL_1, FIRM_SPD_INT, "P02-11 spd_int_1 (firm)");
-    }
-
-    // Gain set 2 (soft) - always ensure these match our desired values
-    allOk &= ensureRegister(REG_POS_GAIN_2, SOFT_POS_GAIN, "P02-01 pos_gain_2 (soft)");
-    allOk &= ensureRegister(REG_SPD_GAIN_2, SOFT_SPD_GAIN, "P02-13 spd_gain_2 (soft)");
-    allOk &= ensureRegister(REG_SPD_INTEGRAL_2, SOFT_SPD_INT, "P02-14 spd_int_2 (soft)");
-
-    // Gain switching behavior
-    allOk &= ensureRegister(REG_GAIN_SWITCH_MODE, COMPLIANCE_SWITCH_MODE, "P02-30 gain_switch_mode");
-    allOk &= ensureRegister(REG_GAIN_SWITCH_LEVEL, COMPLIANCE_DEFAULT_LEVEL, "P02-31 gain_switch_level");
-    allOk &= ensureRegister(REG_GAIN_SWITCH_HYST, COMPLIANCE_HYSTERESIS, "P02-32 gain_switch_hyst");
-    allOk &= ensureRegister(REG_GAIN_SWITCH_DELAY, COMPLIANCE_SWITCH_DELAY, "P02-33 gain_switch_delay");
-
-    _configured = allOk;
-
-    if (allOk) {
-        Serial.println("[MODBUS] Servo compliance ready");
-        Serial.println("[MODBUS] Servo handles gain switching internally at 2kHz");
-    } else {
-        Serial.println("[MODBUS] WARNING: Some registers failed. Compliance may be partial.");
-        Serial.println("[MODBUS] Check firmware version (V5 vs V6 have different register addresses).");
-    }
-
-    return allOk;
+    return true;
 }
 
 bool isConnected() {
