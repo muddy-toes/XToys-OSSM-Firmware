@@ -207,26 +207,12 @@ void StreamingController::_runTickTask() {
             int32_t distance = abs(targetPos - currentPos);
 
             if (distance > 0 && cmd.duration_ms > 0) {
-                // Average speed to cover distance in the allotted time.
-                // With the high fixed acceleration below, the velocity profile
-                // is nearly rectangular (instant accel), so average ~ peak.
-                // This makes each move take ~T + V/a seconds, slightly LONGER
-                // than allotted, so the motor is still in motion when the next
-                // command arrives and FastAccelStepper transitions seamlessly.
                 float time_s = constrain(cmd.duration_ms / 1000.0f, 0.02f, 120.0f);
                 uint32_t speed = (uint32_t)(distance / time_s);
                 // MUDDY - this was here previously instead of above, removed to attempt smoother motion:  uint32_t speed = (uint32_t)(1.5f * distance / time_s);
 
-                // Always use high acceleration. The per-move formula (3*speed/time)
-                // assumes the motor starts from rest, but mid-streaming the motor is
-                // almost never at rest. A short gentle move after a fast one would get
-                // an accel too low to decelerate the motor's existing momentum, causing
-                // step loss and physical drift past the keepout zone.
-                uint32_t accel = _maxStepAcceleration / 2;
-                if (accel < 1000) accel = 1000;
-
                 safeSetSpeed(speed);
-                safeSetAcceleration(accel);
+                safeSetAcceleration(_maxStepAcceleration);
                 safeMoveTo(targetPos);
             } else if (distance > 0) {
                 // time=0 means move immediately at max speed

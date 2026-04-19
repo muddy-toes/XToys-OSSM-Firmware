@@ -38,6 +38,7 @@ void MotorController::begin(uint8_t stepPin, uint8_t dirPin, uint8_t enablePin,
         // Apply limits to the stepper
         _servo->setSpeedInHz(_maxStepPerSec);
         _servo->setAcceleration(_maxStepAccel);
+        _servo->setLinearAcceleration(LINEAR_ACCEL_STEPS);
 
     }
 
@@ -623,12 +624,8 @@ void MotorController::_runPatternTask() {
         if (stepsPerSec < 1) stepsPerSec = 1;
         if (stepsPerSec > _maxStepPerSec) stepsPerSec = _maxStepPerSec;
 
-        // High acceleration so motor reaches speed quickly
-        uint32_t accel = _maxStepAccel / 2;
-        if (accel < 1000) accel = 1000;
-
         _servo->setSpeedInHz(stepsPerSec);
-        _servo->setAcceleration(accel);
+        _servo->setAcceleration(_maxStepAccel);
 
         int32_t target = movingToMax ? _patternMax : _patternMin;
         _servo->moveTo(target);

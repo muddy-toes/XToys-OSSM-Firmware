@@ -51,6 +51,7 @@
 // 3000rpm * 800 step per rev / 60s = 40k steps per second.  step per mm is 20.  40k / 20 = 2000 mm/s
 #define MAX_SPEED         (MAX_RPM / 60.0) * PULLEY_TEETH * BELT_PITCH
 #define KEEPOUT_TRAVEL    5.0       // mm, distance at each end to avoid collision
+#define LINEAR_ACCEL_STEPS  100   // steps over which acceleration ramps 0 -> max (cubic ease-in/out)
 
 // Various pins
 constexpr int speedPotPin = 34;
