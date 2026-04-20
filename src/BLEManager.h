@@ -20,9 +20,9 @@ namespace BLEManager {
   extern BLEServer *pServer;
   extern BLEService *pService;
   extern BLECharacteristic *controlCharacteristic;
-  extern BLECharacteristic *settingsCharacteristic;
   extern BLEService *infoService;
-  extern BLECharacteristic *softwareVersionCharacteristic;
+  extern BLECharacteristic *softwareAPIVersionCharacteristic;
+  extern BLECharacteristic *softwareFirmwareVersionCharacteristic;
 
 
   class MessageCallbacks : public BLECharacteristicCallbacks {

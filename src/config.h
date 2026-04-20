@@ -8,14 +8,15 @@
 #define SERVO_DIR         27
 #define SERVO_ENABLE      26
 #define SERVO_ENDSTOP     12
-#define SERVO_ALARM       26
+// #define SERVO_ALARM       26
 #define SERVO_SENSORLESS  36
-#define PWM               21
-#define RGB_LED           25
+// #define PWM               21  // conflicts with displayData (I2C SDA), unused in code
+// #define RGB_LED           25
 
 // OSSM speed limits
-#define HOMING_SPEED          100
-#define SPEED_UPPER_LIMIT     180 // strokes per minute
+#define HOMING_SPEED              100   // mm/s for manual/endstop homing
+#define SENSORLESS_HOMING_SPEED   35    // mm/s for sensorless homing (XToys has a 20s timeout; 25mm/s exceeds it for travel > 250mm)
+#define SPEED_UPPER_LIMIT         180   // strokes per minute
 #define SPEED_LOWER_LIMIT     0.5 // strokes per minute
 
 // Only one of Bluetooth or Websockets can be active at once. Compiling and enabling both will break Websockets due to lack of heap space.
@@ -45,13 +46,12 @@
 #define PULLEY_TEETH      20        // How many teeth has the pulley
 #define BELT_PITCH        2         // What is the timing belt pitch in mm
 #define MAX_RPM           3000.0    // Maximum RPM of motor
-#define STEP_PER_MM       STEP_PER_REV / (PULLEY_TEETH * BELT_PITCH)
+#define STEP_PER_MM       (STEP_PER_REV / (PULLEY_TEETH * BELT_PITCH))
 // MUDDY: MAX_SPEED is in mm/s
 // 3000rpm * 800 step per rev / 60s = 40k steps per second.  step per mm is 20.  40k / 20 = 2000 mm/s
 #define MAX_SPEED         (MAX_RPM / 60.0) * PULLEY_TEETH * BELT_PITCH
-#define PHYSICAL_TRAVEL   100.0     // default.  gets overwritten in StrokeEngine by homing
 #define KEEPOUT_TRAVEL    5.0       // mm, distance at each end to avoid collision
-#define MAX_DEPTH         int(0.5 + ((PHYSICAL_TRAVEL - (2 * KEEPOUT_TRAVEL))))
+#define LINEAR_ACCEL_STEPS  100   // steps over which acceleration ramps 0 -> max (cubic ease-in/out)
 
 // Various pins
 constexpr int speedPotPin = 34;

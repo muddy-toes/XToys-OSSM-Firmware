@@ -27,24 +27,28 @@ namespace BLEManager {
         xQueueSend(messageQueue, buffer, 0);  // Non-blocking, drop if full
       }
     }
-  };
+  }
 
   // Client connected to OSSM over BLE
   void ServerCallbacks::onConnect(BLEServer* pServer) {
     BLEManager::deviceConnected = true;
-    Serial.println("BLE Connected");
-  };
+  }
 
   void ServerCallbacks::onDisconnect(BLEServer* pServer) {
     BLEManager::deviceConnected = false;
-    Serial.println("BLE Disconnected");
     pServer->startAdvertising();
     // TODO: stop
-  };
+  }
 
   void sendNotification (String message) {
-    controlCharacteristic->setValue(message.c_str());
-    controlCharacteristic->notify(true);
+    if (!deviceConnected) return;
+    // Use the data-parameter overload to send our exact bytes atomically.
+    // The setValue()+notify() pattern is racy: XToys writes volume updates to
+    // this same characteristic every ~100ms, and those writes overwrite the
+    // characteristic value. If a write lands between setValue and notify, the
+    // notification sends XToys' data instead of ours.
+    controlCharacteristic->notify(
+      (const uint8_t*)message.c_str(), message.length(), true);
   }
 
   void processQueue() {
@@ -65,7 +69,6 @@ namespace BLEManager {
     //###################
     // Initiate Bluetooth
     //###################
-    Serial.println("Initializing BLE Server...");
     NimBLEDevice::init(bleName.c_str());
     pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
@@ -99,13 +102,12 @@ namespace BLEManager {
     NimBLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-    pAdvertising->setMinPreferred(0x12);
+    pAdvertising->setMinPreferred(0x06);  // min connection interval (7.5ms)
+    pAdvertising->setMaxPreferred(0x12); // max connection interval (22.5ms)
     NimBLEDevice::startAdvertising();
-    Serial.println("Done");
-  };
+  }
 
   bool isConnected() {
     return deviceConnected;
-  } 
-};
+  }
+}

@@ -111,12 +111,7 @@ namespace WebsocketManager {
         // The path is ignored for the default node.
         secureServer.setDefaultNode(node404);
 
-        Serial.println("Starting server...");
         secureServer.start();
-        if (secureServer.isRunning()) {
-            Serial.print("Server ready. URL: wss://");
-            Serial.println(WiFi.localIP());
-        }
     }
 
     void loop() {
@@ -139,7 +134,6 @@ namespace WebsocketManager {
     // In the create function of the handler, we create a new Handler and keep track
     // of it using the activeClients array
     WebsocketHandler * MessageHandler::create() {
-        Serial.println("Creating new client!");
         MessageHandler * handler = new MessageHandler();
         for(int i = 0; i < MAX_CLIENTS; i++) {
             if (activeClients[i] == nullptr) {
@@ -159,8 +153,6 @@ namespace WebsocketManager {
         }
     }
 
-    // Finally, passing messages around. If we receive something, we send it to all
-    // other clients
     void MessageHandler::onMessage(WebsocketInputStreambuf * inbuf) {
         // Get the input message
         std::ostringstream ss;
@@ -170,7 +162,6 @@ namespace WebsocketManager {
         msgReceivedCallback(msg.c_str());
     }
 
-    // The following HTML code will present the chat interface.
     void handleRoot(HTTPRequest * req, HTTPResponse * res) {
         res->setHeader("Content-Type", "text/plain");
         res->print("SSL cert accepted. You can now close this tab.");
