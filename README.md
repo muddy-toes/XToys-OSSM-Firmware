@@ -10,15 +10,11 @@ that I have changed the steps-per-revolution from 2000 to 800 to match the offic
 
 Review the differences before flashing this to your OSSM.
 
-Uses my fork of StrokeEngine.  Check it out into lib/StrokeEngine under your checkout of this repo.
+I have an iHSV57-based OSSM.  If you have problems and have the "gold motor", let me know.
 
 Thanks to @Harletta for adding limited support for the wired controller.  The display will now show the connected wifi IP along with connectivity icons.  The knobs will send info to XToys via JSON for scripting but do not directly control the OSSM.
 
 Now compilable with both Bluetooth and WiFi enabled at the same time.  You can configure the BT name and WiFi network settings using Harletta's [BLE WiFi Configurator](https://github.com/Harletta/configure-ossm)
-
-Serial connectivity still drops after some time and I don't know why, but Bluetooth has been quite stable for me.
-
-Sensorless homing is still hit-or-miss.  I recommend using manual homing.  When connecting the OSSM in XToys, push the effector all the way in so the business end is touching the motor.  Measure the amount of rail you can see sticking out the back.  Only measure the silver rail, from where it comes out of the housing to where it goes into the end stop piece.  Enter the distance in mm into the manual homing distance and hit the homing button.  It will move all the way out and stop.  If it skips the belt at the end, you entered too high of a number.
 
 Important safety notes that apply here as well as to the main XToys firmware:
 
