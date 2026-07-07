@@ -61,6 +61,9 @@ void applyStrokeLimits() {
 
 // Convert 0-100 speed percentage to strokes per minute, scaled by stroke length
 float speedPercentToSPM(float speedPercent) {
+    // Speed 0 means parked. Without this, SPEED_LOWER_LIMIT keeps the motor
+    // moving at 0.5 spm - scaled UP by short strokes (10% stroke = 5 spm)
+    if (speedPercent <= 0) return 0;
     float spm = speedPercent * (SPEED_UPPER_LIMIT - SPEED_LOWER_LIMIT) / 100.0f + SPEED_LOWER_LIMIT;
     // Scale speed up when stroke is shorter (less distance to cover)
     int32_t strokeMin, strokeMax;
@@ -101,7 +104,7 @@ void sendHomingResponse(bool isHomed) {
   sendToClients(jsonString);
 }
 
-void homingNotification(bool isHomed) {
+void homingNotification(bool isHomed, bool moveToMax) {
   if (isHomed) {
     // Update StreamingController with new physical limits from homing
     streamingController.updatePhysicalLimits(Motor.getMinStep(), Motor.getMaxStep());
@@ -113,11 +116,17 @@ void homingNotification(bool isHomed) {
   // reliably deliver when sent from a FreeRTOS homing task.
   pendingHomingResult = isHomed ? 1 : -1;
 
-  if (isHomed) {
+  if (isHomed && moveToMax) {
     // Move to max position (this blocks but the main loop will send the
     // BLE notification in parallel since it runs on a different task)
     Motor.moveToMax(HOMING_SPEED, true);
   }
+}
+
+// Single-arg wrapper matching the void(*)(bool) callback signature the
+// async homing tasks expect
+void homingNotificationCallback(bool isHomed) {
+  homingNotification(isHomed, true);
 }
 
 // Encoder stuff
@@ -175,16 +184,19 @@ void processCommand(JsonDocument& doc) {
         // Original logic: side="front" means homeToBack=true, else false
         String side = command["side"];
         bool homeToBack = side.equals("front");
-        Motor.homeEndstop(SERVO_ENDSTOP, true, homeToBack, HOMING_SPEED, homingNotification);
+        Motor.homeEndstop(SERVO_ENDSTOP, true, homeToBack, HOMING_SPEED, homingNotificationCallback);
 
       } else if (type.equals("manual")) {
         float rodLength = command["length"];
-        Motor.homeManual(rodLength);
-        homingNotification(true);
+        // Optional "move" field overrides the compile-time default; when false
+        // the motor stays where it was manually positioned instead of
+        // stroking to full insertion after homing
+        bool moveToMax = command["move"] | (bool)MANUAL_HOMING_MOVE_TO_MAX;
+        homingNotification(Motor.homeManual(rodLength), moveToMax);
 
       } else if (type.equals("sensorless")) {
         float maxTravel = command["length"] | 0.0f;  // 0 = no limit (backward compat)
-        Motor.homeSensorless(SERVO_SENSORLESS, 1.0, SENSORLESS_HOMING_SPEED, maxTravel, homingNotification);
+        Motor.homeSensorless(SERVO_SENSORLESS, 1.0, SENSORLESS_HOMING_SPEED, maxTravel, homingNotificationCallback);
       }
 
     } else if (action.equals("configureWebsocket")) {
@@ -194,7 +206,6 @@ void processCommand(JsonDocument& doc) {
       preferences.putString("ssid", ssid);
       preferences.putString("password", password);
       preferences.putBool("useWebsocket", true);
-      preferences.end();
 
       rebootInMillis = millis() + 3000; // reboot in 3 seconds
 
@@ -203,13 +214,13 @@ void processCommand(JsonDocument& doc) {
 
       preferences.putString("bleName", bleName);
       preferences.putBool("useBluetooth", true);
-      preferences.end();
 
       rebootInMillis = millis() + 3000; // reboot in 3 seconds
 
     } else if (action.equals("stop")) {
       streamingController.stop();
       Motor.stopPattern();
+      Motor.abortHoming();
 
     } else if (action.equals("setStroke")) {
       currentStrokePercent = command["stroke"];
@@ -268,7 +279,10 @@ void processCommand(JsonDocument& doc) {
 }
 
 void onToyMessage(String msg) {
-  StaticJsonDocument<512> localDoc;
+  // 1024, not 512: ArduinoJson needs pool space beyond the raw input length,
+  // so a batched command array near the 512-byte transport cap would
+  // otherwise fail with NoMemory and be silently dropped
+  StaticJsonDocument<1024> localDoc;
   if (deserializeJson(localDoc, msg) == DeserializationError::Ok) {
     processCommand(localDoc);
   }
@@ -362,6 +376,19 @@ void loop() {
         }
       } else {
         WebsocketManager::loop();
+
+        // Dead-man switch matching the BLE disconnect handling below:
+        // if the last websocket client drops mid-session, stop the motor
+        // rather than letting pattern mode run headless
+        static bool lastWsConnected = false;
+        bool wsConnected = WebsocketManager::clientCount() > 0;
+        if (wsConnected != lastWsConnected) {
+          lastWsConnected = wsConnected;
+          if (!wsConnected) {
+            streamingController.stop();
+            Motor.disable();
+          }
+        }
       }
     }
   #endif

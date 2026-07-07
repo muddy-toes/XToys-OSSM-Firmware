@@ -154,12 +154,23 @@ namespace WebsocketManager {
     }
 
     void MessageHandler::onMessage(WebsocketInputStreambuf * inbuf) {
-        // Get the input message
-        std::ostringstream ss;
-        std::string msg;
-        ss << inbuf;
-        msg = ss.str();
-        msgReceivedCallback(msg.c_str());
+        // Read into a fixed buffer instead of an unbounded ostringstream so
+        // an oversized frame can't exhaust the heap. Oversized messages are
+        // drained and dropped.
+        char buf[WS_MAX_MESSAGE_LENGTH];
+        size_t len = 0;
+        bool oversized = false;
+        int c;
+        while ((c = inbuf->sbumpc()) != std::char_traits<char>::eof()) {
+            if (len < sizeof(buf) - 1) {
+                buf[len++] = (char)c;
+            } else {
+                oversized = true;
+            }
+        }
+        if (oversized) return;
+        buf[len] = '\0';
+        msgReceivedCallback(String(buf));
     }
 
     void handleRoot(HTTPRequest * req, HTTPResponse * res) {
@@ -171,8 +182,15 @@ namespace WebsocketManager {
         for(int i = 0; i < MAX_CLIENTS; i++) {
             if (activeClients[i] != nullptr) {
                 activeClients[i]->send(msg.c_str(), WebsocketHandler::SEND_TYPE_TEXT);
-                break;
             }
         }
+    }
+
+    int clientCount() {
+        int count = 0;
+        for(int i = 0; i < MAX_CLIENTS; i++) {
+            if (activeClients[i] != nullptr) count++;
+        }
+        return count;
     }
 }

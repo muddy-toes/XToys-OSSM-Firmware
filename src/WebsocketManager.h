@@ -10,6 +10,9 @@
 
 using namespace httpsserver;
 
+// Match the other transports' message cap (BLE and serial are 512)
+#define WS_MAX_MESSAGE_LENGTH 512
+
 namespace WebsocketManager {
 
     // Callback function to call any time a message is received
@@ -35,6 +38,7 @@ namespace WebsocketManager {
     void setup(void (*msgReceivedCallback)(String));
     void loop();
     void sendMessage(String msg);
+    int clientCount();
 
     extern SSLCert cert;
     extern HTTPSServer secureServer;

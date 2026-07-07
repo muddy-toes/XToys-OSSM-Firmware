@@ -162,13 +162,31 @@ void MotorController::setMaxAcceleration(float mmPerSecSq) {
 // Common homing failure cleanup
 // ============================================================================
 
-void MotorController::_failHoming() {
+void MotorController::_failHoming(bool notify) {
     if (_servo) {
         _servo->forceStop();
         _servo->disableOutputs();
     }
     _state = MOTOR_DISABLED;
-    if (_homingCallback) _homingCallback(false);
+    if (notify && _homingCallback) _homingCallback(false);
+}
+
+bool MotorController::_waitForHomingTaskExit() {
+    if (_homingTask == nullptr) return true;
+
+    _abortHoming = true;
+
+    // Homing tasks poll the abort flag every 10-20ms, but the sensorless
+    // routine has a 600ms settling delay between checks - allow 2 seconds.
+    for (int i = 0; i < 200; i++) {
+        if (_homingTask == nullptr) return true;
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+    return false;
+}
+
+void MotorController::abortHoming() {
+    _abortHoming = true;
 }
 
 // ============================================================================
@@ -194,6 +212,14 @@ void MotorController::homeEndstop(uint8_t endstopPin, bool activeLow, bool homeT
         return;
     }
 
+    // A previous homing task may still be winding down (disable() clears
+    // _state before the task observes the abort flag). Wait for it to exit
+    // so two tasks never fight over the servo.
+    if (!_waitForHomingTaskExit()) {
+        if (callback) callback(false);
+        return;
+    }
+
     // Reset abort flag before starting
     _abortHoming = false;
 
@@ -212,7 +238,7 @@ void MotorController::homeEndstop(uint8_t endstopPin, bool activeLow, bool homeT
         4096,           // Stack size
         this,           // Pass this pointer
         20,             // Priority
-        &_homingTask,
+        (TaskHandle_t*)&_homingTask,  // cast away volatile; handle is written before the task runs
         1               // Core 1
     );
 
@@ -222,10 +248,11 @@ void MotorController::homeEndstop(uint8_t endstopPin, bool activeLow, bool homeT
     }
 }
 
-void MotorController::homeManual(float rodLength) {
-    if (!_servo) return;
-    if (_state == MOTOR_HOMING) return;
-    if (rodLength < 10.0f || rodLength > 500.0f) return;
+bool MotorController::homeManual(float rodLength) {
+    if (!_servo) return false;
+    if (_state == MOTOR_HOMING) return false;
+    if (rodLength < 10.0f || rodLength > 500.0f) return false;
+    if (!_waitForHomingTaskExit()) return false;
 
     // Enable motor
     _servo->enableOutputs();
@@ -242,6 +269,7 @@ void MotorController::homeManual(float rodLength) {
     _maxStep = totalSteps - keepoutSteps;  // 5mm from front hard stop
 
     _state = MOTOR_READY;
+    return true;
 }
 
 void MotorController::homeSensorless(uint8_t currentPin, float threshold, float speed,
@@ -252,6 +280,12 @@ void MotorController::homeSensorless(uint8_t currentPin, float threshold, float 
     }
 
     if (_state == MOTOR_HOMING) {
+        if (callback) callback(false);
+        return;
+    }
+
+    // See homeEndstop - never let two homing tasks coexist
+    if (!_waitForHomingTaskExit()) {
         if (callback) callback(false);
         return;
     }
@@ -274,7 +308,7 @@ void MotorController::homeSensorless(uint8_t currentPin, float threshold, float 
         4096,           // Stack size
         this,           // Pass this pointer
         20,             // Priority
-        &_homingTask,
+        (TaskHandle_t*)&_homingTask,  // cast away volatile; handle is written before the task runs
         1               // Core 1
     );
 
@@ -330,12 +364,12 @@ void MotorController::_runEndstopHomingTask() {
         // Verify we're clear of endstop
         endstopActive = (digitalRead(_homingEndstopPin) == (_homingActiveLow ? LOW : HIGH));
         if (endstopActive && !_abortHoming) {
-            _failHoming();
+            _failHoming(true);
             return;
         }
     }
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     // Run toward endstop (direction depends on homeToBack)
     if (_homingToBack) {
@@ -359,7 +393,7 @@ void MotorController::_runEndstopHomingTask() {
     }
 
     if (!found || _abortHoming) {
-        _failHoming();
+        _failHoming(!_abortHoming);
         return;
     }
 
@@ -373,7 +407,7 @@ void MotorController::_runEndstopHomingTask() {
     _maxStep = totalSteps - keepoutSteps;  // keepout from front hard stop
 
     if (_minStep >= _maxStep) {
-        _failHoming();
+        _failHoming(true);
         return;
     }
 
@@ -383,7 +417,7 @@ void MotorController::_runEndstopHomingTask() {
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     _state = MOTOR_READY;
     _servo->setSpeedInHz(_maxStepPerSec);
@@ -413,22 +447,23 @@ void MotorController::_runSensorlessHomingTask() {
     _servo->disableOutputs();
     vTaskDelay(600 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     // Re-enable and wait for servo to stabilize
     _servo->enableOutputs();
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     // === Phase 1: Run forward to find max position ===
-    if (_servo->runForward() != 0) { _failHoming(); return; }
+    if (_servo->runForward() != 0) { _failHoming(true); return; }
 
     // Check current immediately - no min travel guard.
     // Adding a blind spot caused the iHSV57 servo to alarm before
     // the firmware could detect the stall.
     unsigned long startTime = millis();
     int32_t phase1StartPos = _servo->getCurrentPosition();
+    bool travelExceeded = false;
 
     currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
@@ -439,7 +474,7 @@ void MotorController::_runSensorlessHomingTask() {
         if (_homingMaxTravel > 0) {
             float distanceTraveled = abs(_servo->getCurrentPosition() - phase1StartPos) / _stepsPerMm;
             if (distanceTraveled > _homingMaxTravel) {
-                _abortHoming = true;
+                travelExceeded = true;
                 break;
             }
         }
@@ -447,7 +482,7 @@ void MotorController::_runSensorlessHomingTask() {
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming || (millis() - startTime >= timeout)) { _failHoming(); return; }
+    if (travelExceeded || _abortHoming || (millis() - startTime >= timeout)) { _failHoming(!_abortHoming); return; }
 
     // Capture phase 1 travel distance before resetting position.
     // We know this much space behind us is clear - phase 2 can fast-traverse it.
@@ -456,7 +491,7 @@ void MotorController::_runSensorlessHomingTask() {
     // Found forward limit - this becomes position 0 (max)
     _servo->forceStopAndNewPosition(0);
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     // === Phase 2: Run backward to find min position ===
     // Optimization: fast-traverse back through known-safe zone from phase 1,
@@ -476,7 +511,7 @@ void MotorController::_runSensorlessHomingTask() {
             vTaskDelay(20 / portTICK_PERIOD_MS);
         }
 
-        if (_abortHoming) { _failHoming(); return; }
+        if (_abortHoming) { _failHoming(false); return; }
 
         // Restore homing speed/accel for detection
         _servo->setSpeedInHz(homingSpeedHz);
@@ -484,17 +519,18 @@ void MotorController::_runSensorlessHomingTask() {
     }
 
     // Continue backward at slow detection speed
-    if (_servo->runBackward() != 0) { _failHoming(); return; }
+    if (_servo->runBackward() != 0) { _failHoming(true); return; }
 
     // Wait AFTER starting backward motion to let current sensor settle.
     // This delay lets the motor travel ~10mm at 35mm/s, clearing any residual
     // stall current from phase 1's hard stop (or from the fast traverse stop).
     vTaskDelay(300 / portTICK_PERIOD_MS);
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     startTime = millis();
     int32_t phase2StartPos = _servo->getCurrentPosition();
+    travelExceeded = false;
 
     currentReading = getAnalogAveragePercent(_homingCurrentPin, ADC_SAMPLES) - baselineCurrent;
     while (currentReading < _homingThreshold && !_abortHoming && (millis() - startTime < timeout)) {
@@ -505,7 +541,7 @@ void MotorController::_runSensorlessHomingTask() {
         if (_homingMaxTravel > 0) {
             float distanceTraveled = abs(_servo->getCurrentPosition() - phase2StartPos) / _stepsPerMm;
             if (distanceTraveled > _homingMaxTravel) {
-                _abortHoming = true;
+                travelExceeded = true;
                 break;
             }
         }
@@ -513,7 +549,7 @@ void MotorController::_runSensorlessHomingTask() {
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming || (millis() - startTime >= timeout)) { _failHoming(); return; }
+    if (travelExceeded || _abortHoming || (millis() - startTime >= timeout)) { _failHoming(!_abortHoming); return; }
 
     // Calculate measured travel from position (negative = distance traveled backward)
     float measuredTravel = abs(_servo->getCurrentPosition()) / _stepsPerMm;
@@ -528,7 +564,7 @@ void MotorController::_runSensorlessHomingTask() {
     _minStep = keepoutSteps;               // keepout from back hard stop
     _maxStep = totalSteps - keepoutSteps;  // keepout from front hard stop
 
-    if (_minStep >= _maxStep) { _failHoming(); return; }
+    if (_minStep >= _maxStep) { _failHoming(true); return; }
 
     // Move to minStep (safe boundary, away from back hard stop)
     _servo->moveTo(_minStep);
@@ -536,7 +572,7 @@ void MotorController::_runSensorlessHomingTask() {
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 
-    if (_abortHoming) { _failHoming(); return; }
+    if (_abortHoming) { _failHoming(false); return; }
 
     _state = MOTOR_READY;
     _servo->setSpeedInHz(_maxStepPerSec);
@@ -582,6 +618,7 @@ void MotorController::setPatternLimits(int32_t strokeMin, int32_t strokeMax) {
 }
 
 void MotorController::stopPattern() {
+    bool wasActive = (_patternTask != nullptr);
     _patternActive = false;
     if (_patternTask != nullptr) {
         // Give the task 200ms to exit cleanly
@@ -592,6 +629,11 @@ void MotorController::stopPattern() {
             vTaskDelete(_patternTask);
             _patternTask = nullptr;
         }
+    }
+    // The task never stops the servo itself - an in-flight moveTo would
+    // otherwise run to completion after the task exits
+    if (wasActive && _servo) {
+        _servo->stopMove();
     }
 }
 
@@ -611,6 +653,11 @@ void MotorController::_runPatternTask() {
         int32_t strokeRange = _patternMax - _patternMin;
 
         if (strokeRange <= 0 || speed <= 0) {
+            // Parked - decelerate any in-flight stroke rather than letting
+            // it finish at the old speed
+            if (_servo->isRunning()) {
+                _servo->stopMove();
+            }
             vTaskDelay(50 / portTICK_PERIOD_MS);
             lastGen = _patternGen;
             continue;

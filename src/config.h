@@ -13,6 +13,15 @@
 // #define PWM               21  // conflicts with displayData (I2C SDA), unused in code
 // #define RGB_LED           25
 
+// Manual homing behavior: true = stroke to full insertion after homing
+// (stock XToys behavior), false = stay at the manually-set position and be
+// ready immediately. Can be overridden per-command with an optional
+// "move":true/false field on the manual home command, or at build time via
+// build_flags = -DMANUAL_HOMING_MOVE_TO_MAX=0 in a custom PlatformIO env.
+#ifndef MANUAL_HOMING_MOVE_TO_MAX
+#define MANUAL_HOMING_MOVE_TO_MAX true
+#endif
+
 // OSSM speed limits
 #define HOMING_SPEED              100   // mm/s for manual/endstop homing
 #define SENSORLESS_HOMING_SPEED   35    // mm/s for sensorless homing (XToys has a 20s timeout; 25mm/s exceeds it for travel > 250mm)

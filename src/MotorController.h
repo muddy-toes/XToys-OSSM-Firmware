@@ -21,13 +21,14 @@ public:
     // Homing methods
     void homeEndstop(uint8_t endstopPin, bool activeLow, bool homeToBack, float speed,
                      void (*callback)(bool));
-    void homeManual(float rodLength);
+    bool homeManual(float rodLength);
     void homeSensorless(uint8_t currentPin, float threshold, float speed,
                         float maxTravel, void (*callback)(bool));
 
     // State management
     MotorState getState();
     void disable();
+    void abortHoming();
 
     // Motion commands
     void moveToMax(float speed, bool blocking = false);
@@ -67,7 +68,8 @@ private:
     float _physicalTravel = 0;
 
     // Homing task management
-    TaskHandle_t _homingTask = nullptr;
+    // volatile: nulled by the task wrapper on exit, polled by _waitForHomingTaskExit
+    volatile TaskHandle_t _homingTask = nullptr;
     void (*_homingCallback)(bool) = nullptr;
 
     // Homing abort flag - checked in homing loops, set by disable()
@@ -93,7 +95,13 @@ private:
     float _homingMaxTravel = 0;
 
     // Common abort/failure cleanup for homing tasks
-    void _failHoming();
+    // notify=false suppresses the callback (used for deliberate aborts,
+    // where a failure notification would confuse a re-homing client)
+    void _failHoming(bool notify);
+
+    // Abort any running homing task and wait for it to exit.
+    // Returns false if the task didn't exit within the timeout.
+    bool _waitForHomingTaskExit();
 
     // Internal homing task implementations
     void _runEndstopHomingTask();
